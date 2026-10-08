@@ -1,7 +1,8 @@
 # Lead Intake & Qualification
 
-An n8n workflow that receives inbound leads via webhook, scores them with AI plus deterministic rules, stores the result, and routes each lead as HOT, WARM, or COLD.
+<img width="1503" height="542" alt="Lead Intake   Qualification" src="https://github.com/user-attachments/assets/1996edf7-d2d9-4d9b-ad70-5342ca771c6b" />
 
+An n8n workflow that receives inbound leads via webhook, scores them with AI plus deterministic rules, stores the result, and routes each lead as HOT, WARM, or COLD.
 
 ## How it works
 
