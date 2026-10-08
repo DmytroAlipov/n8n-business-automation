@@ -1,7 +1,6 @@
 # Crypto Rates Sync with Anomaly Guard — n8n
 
-
-
+<img width="1480" height="739" alt="Rates Sync with Anomaly Guard" src="https://github.com/user-attachments/assets/27e2a9f1-b969-412b-b795-cfc2d0119273" />
 
 A scheduled n8n workflow that keeps cryptocurrency prices in MongoDB up to date **without ever trusting a single reading blindly**. It fetches prices from a primary source with an automatic fallback, compares every new price with the last accepted one, holds suspicious jumps until they are confirmed, tracks the health of the data sources, and reports problems to WhatsApp.
 
