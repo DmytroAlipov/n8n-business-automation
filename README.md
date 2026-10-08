@@ -27,6 +27,7 @@ AI-powered customer support workflow that:
 * monitors SLA deadlines.
 
 **Stack:** n8n · OpenAI · MongoDB · n8n Data Tables · WhatsApp Business Cloud API · Gmail
+
 **Docs:** [`customer_support_triage/README.md`](customer_support_triage/README.md)
 
 ### 2. Lead Qualification Automation
@@ -43,6 +44,7 @@ Automated B2B lead processing workflow that:
 * generates personalized follow-ups.
 
 **Stack:** n8n · OpenAI · MongoDB · n8n Data Tables · HubSpot · Slack · Gmail · Google Sheets
+
 **Docs:** [`lead_qualification_crm/README.md`](lead_qualification_crm/README.md)
 
 ### 3. E-commerce Fraud Detection
@@ -59,6 +61,7 @@ Automated e-commerce transaction security and risk analysis workflow that:
 * sends customer-safe payment review updates without exposing internal security metrics.
 
 **Stack:** n8n · LLM · MongoDB · Slack · Gmail
+
 **Docs:** [`ecommerce_order_fraud_detection/README.md`](ecommerce_order_fraud_detection/README.md)
 
 ### 4. Crypto Rates Sync with Anomaly Guard
@@ -75,6 +78,7 @@ Scheduled, AI-free data synchronization workflow that keeps cryptocurrency price
 * reports unexpected errors through a global error handler.
 
 **Stack:** n8n · MongoDB · CoinGecko API · Binance public API · WhatsApp Business Cloud API
+
 **Docs:** [`rates_sync_with_anomaly_guard/README.md`](rates_sync_with_anomaly_guard/README.md)
 
 ---
