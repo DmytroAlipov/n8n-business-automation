@@ -1,9 +1,10 @@
 # AI Customer Support Triage
+
+<img width="1495" height="680" alt="Customer Support Triage" src="https://github.com/user-attachments/assets/4e274bb5-1a48-4089-a43e-1b16bb318925" />
+
 An n8n workflow that receives customer support requests, triages them with an LLM, applies **deterministic business rules on top of the AI decision**, replies to the customer (WhatsApp or email), escalates to humans through WhatsApp, and watches SLA deadlines in the background.
 
 It is built around one idea: **the LLM suggests, the workflow decides.** The model classifies and drafts; hard rules, fail-safes and SLA tracking keep the system predictable when the model is wrong, slow or unavailable.
-
-
 
 ---
 
