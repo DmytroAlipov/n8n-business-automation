@@ -1,0 +1,1106 @@
+{
+  "nodes": [
+    {
+      "parameters": {
+        "content": "## Rates Sync with Anomaly Guard\nEvery 5 min: fetch prices (CoinGecko → Binance fallback) → compare with the last accepted price in MongoDB → update, hold, or confirm.\n\n**Per-asset decision**\n- `first` / `ok` → price updated + history row\n- `suspect` (jump > max %) → price NOT updated, streak +1, alert once\n- `confirmed_move` (N consecutive consistent readings) → price updated + alert\n\n**Source health:** failures are counted in `monitor_state`; WhatsApp alert after N failed runs (with cooldown), recovery message when it works again.",
+        "height": 282,
+        "width": 560
+      },
+      "id": "e971ae47-1286-48a1-8d9f-e2217d77c8bb",
+      "name": "Note - Overview",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        80,
+        208
+      ]
+    },
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "minutes"
+            }
+          ]
+        }
+      },
+      "id": "1fbc7e2a-f49a-45af-9038-f47090b652b8",
+      "name": "Every 5 Minutes",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        80,
+        656
+      ]
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "ff9509b5-f5c1-4f67-94e1-30e1017498fa",
+              "name": "assets",
+              "value": "[{\"id\":\"bitcoin\",\"symbol\":\"BTC\"},{\"id\":\"ethereum\",\"symbol\":\"ETH\"},{\"id\":\"solana\",\"symbol\":\"SOL\"}]",
+              "type": "string"
+            },
+            {
+              "id": "d9584365-b83d-405c-a9e2-d656e16bb764",
+              "name": "vs_currency",
+              "value": "eur",
+              "type": "string"
+            },
+            {
+              "id": "689bb322-6eec-4e15-917e-735b402d5635",
+              "name": "max_change_pct",
+              "value": 10,
+              "type": "number"
+            },
+            {
+              "id": "ff80cfdb-6c22-4150-9e9b-737ecd10011f",
+              "name": "confirm_readings",
+              "value": 3,
+              "type": "number"
+            },
+            {
+              "id": "8527250d-fbc9-47bf-a637-81c20ccc796d",
+              "name": "failure_alert_after",
+              "value": 3,
+              "type": "number"
+            },
+            {
+              "id": "09453216-31aa-423b-9cb6-964e53992b08",
+              "name": "alert_cooldown_min",
+              "value": 60,
+              "type": "number"
+            },
+            {
+              "id": "8806c54c-20fb-42d9-b655-eaae6c758792",
+              "name": "alert_whatsapp",
+              "value": "ALERT_WHATSAPP",
+              "type": "string"
+            },
+            {
+              "id": "954ecef9-b776-48e1-9392-a663af78dcd9",
+              "name": "whatsapp_phone_number_id",
+              "value": "PHONE_NUMBER_ID",
+              "type": "string"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "001333a1-8260-43b4-8d57-2028a9d2907b",
+      "name": "Config",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        272,
+        656
+      ]
+    },
+    {
+      "parameters": {
+        "collection": "monitor_state",
+        "options": {
+          "limit": 1
+        },
+        "query": "{\"job\": \"rates_sync\"}"
+      },
+      "id": "f9989e1e-c608-4f48-b460-29cb1f2cda40",
+      "name": "Load Monitor State",
+      "type": "n8n-nodes-base.mongoDb",
+      "typeVersion": 1.2,
+      "position": [
+        464,
+        656
+      ],
+      "alwaysOutputData": true,
+      "credentials": {
+        "mongoDb": {
+          "id": "xhsfsqq25iZMV5LD",
+          "name": "MongoDB account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "collection": "rates",
+        "options": {
+          "limit": 50
+        }
+      },
+      "id": "9d5bf640-4555-4d73-954c-a48690d3586f",
+      "name": "Load Previous Rates",
+      "type": "n8n-nodes-base.mongoDb",
+      "typeVersion": 1.2,
+      "position": [
+        656,
+        656
+      ],
+      "alwaysOutputData": true,
+      "credentials": {
+        "mongoDb": {
+          "id": "xhsfsqq25iZMV5LD",
+          "name": "MongoDB account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const cfg = $('Config').first().json;\n\nlet assets;\ntry { assets = JSON.parse(cfg.assets); } catch (e) { throw new Error('Config.assets must be valid JSON'); }\nif (!Array.isArray(assets) || !assets.length) throw new Error('Config.assets must be a non-empty array');\nfor (const a of assets) {\n  if (!/^[a-z0-9-]+$/.test(a.id ?? '') || !/^[A-Z0-9]+$/.test(a.symbol ?? '')) {\n    throw new Error(`Invalid asset definition: ${JSON.stringify(a)}`);\n  }\n}\n\nconst vs = String(cfg.vs_currency).trim().toLowerCase();\nif (!/^[a-z]{3,5}$/.test(vs)) throw new Error('Config.vs_currency is invalid');\n\nconst ids = assets.map(a => a.id).join(',');\nconst pairs = assets.map(a => a.symbol + vs.toUpperCase());\n\nreturn [{\n  json: {\n    assets, vs,\n    coingecko_url: `https://api.coingecko.com/api/v3/simple/price?ids=${ids}&vs_currencies=${vs}`,\n    binance_url: `https://api.binance.com/api/v3/ticker/price?symbols=${encodeURIComponent(JSON.stringify(pairs))}`\n  }\n}];"
+      },
+      "id": "ab610574-0e52-41a8-8abd-36c2bac6e31d",
+      "name": "Build Requests",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        848,
+        656
+      ]
+    },
+    {
+      "parameters": {
+        "url": "={{ $('Build Requests').first().json.coingecko_url }}",
+        "options": {
+          "timeout": 10000
+        }
+      },
+      "id": "3d167047-2c05-44d8-9cce-153a6a41b727",
+      "name": "Fetch CoinGecko",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1040,
+        656
+      ],
+      "retryOnFail": true,
+      "maxTries": 2,
+      "waitBetweenTries": 2000,
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "const plan = $('Build Requests').first().json;\nconst res = $json;\n\nconst prices = {};\nconst missing = [];\nfor (const a of plan.assets) {\n  const v = Number(res?.[a.id]?.[plan.vs]);\n  if (Number.isFinite(v) && v > 0) prices[a.symbol] = v; else missing.push(a.symbol);\n}\n\nreturn [{\n  json: {\n    source: 'coingecko',\n    ok: missing.length === 0,\n    prices,\n    fetched_at: new Date().toISOString(),\n    reason: missing.length ? `invalid or missing prices: ${missing.join(', ')}` : null\n  }\n}];"
+      },
+      "id": "f2522752-b775-45ae-81b7-c23bace89abe",
+      "name": "Normalize CoinGecko",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1264,
+        560
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "6f26967e-62cc-48df-bcc7-bcefe72534d4",
+              "leftValue": "={{ $json.ok }}",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "d0d8ea16-9c9f-4d19-afc2-650423fc2c5a",
+      "name": "Primary Valid?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        1456,
+        560
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const e = $json.error;\nconst msg = typeof e === 'string' ? e : (e?.message ?? JSON.stringify(e ?? {}).slice(0, 200));\nreturn [{ json: { reason: `request failed: ${msg}` } }];"
+      },
+      "id": "f371beaf-f4a0-4976-b4fe-be397f6143e1",
+      "name": "Mark Primary Failed",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1264,
+        800
+      ]
+    },
+    {
+      "parameters": {
+        "url": "={{ $('Build Requests').first().json.binance_url }}",
+        "options": {
+          "timeout": 10000
+        }
+      },
+      "id": "694d52e7-01c8-4523-a89c-55ba2c6e1fa3",
+      "name": "Fetch Binance (fallback)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1440,
+        800
+      ],
+      "retryOnFail": true,
+      "maxTries": 2,
+      "waitBetweenTries": 2000,
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "const plan = $('Build Requests').first().json;\n\n// The HTTP node splits an array response into one item per element\nconst rows = $input.all().map(i => i.json).filter(r => r && r.symbol);\nconst bySymbol = Object.fromEntries(rows.map(r => [r.symbol, Number(r.price)]));\n\nconst prices = {};\nconst missing = [];\nfor (const a of plan.assets) {\n  const v = bySymbol[a.symbol + plan.vs.toUpperCase()];\n  if (Number.isFinite(v) && v > 0) prices[a.symbol] = v; else missing.push(a.symbol);\n}\n\nreturn [{\n  json: {\n    source: 'binance',\n    ok: missing.length === 0,\n    prices,\n    fetched_at: new Date().toISOString(),\n    reason: missing.length ? `invalid or missing prices: ${missing.join(', ')}` : null\n  }\n}];"
+      },
+      "id": "6e48d5d0-769c-4585-99f3-e27d5f08a439",
+      "name": "Normalize Binance",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1664,
+        784
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "89a62005-290b-4f46-980a-68718928727b",
+              "leftValue": "={{ $json.ok }}",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "220446b4-3cf0-473c-aa7f-1de3b51cd05a",
+      "name": "Fallback Valid?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        1872,
+        784
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const e = $json.error;\nconst msg = typeof e === 'string' ? e : (e?.message ?? JSON.stringify(e ?? {}).slice(0, 200));\nreturn [{ json: { reason: `request failed: ${msg}` } }];"
+      },
+      "id": "37e96bcb-208b-4335-8cfd-4510c6f39749",
+      "name": "Mark Fallback Failed",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1664,
+        1024
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const cfg = $('Config').first().json;\nconst plan = $('Build Requests').first().json;\nconst cur = $input.first().json;               // { source, prices, fetched_at }\nconst maxPct = Number(cfg.max_change_pct);\nconst confirmN = Number(cfg.confirm_readings);\n\nconst prev = {};\nfor (const i of $('Load Previous Rates').all()) {\n  const r = i.json;\n  if (r && r.asset) prev[r.asset] = r;\n}\n\nconst round = n => Math.round(n * 100) / 100;\nconst out = [];\n\nfor (const a of plan.assets) {\n  const price = cur.prices[a.symbol];\n  const p = prev[a.symbol];\n  const base = {\n    asset: a.symbol, currency: plan.vs.toUpperCase(), price,\n    source: cur.source, fetched_at: cur.fetched_at, last_checked_at: cur.fetched_at,\n    confirm_readings: confirmN\n  };\n\n  // First time we see this asset\n  if (!p || !(Number(p.price) > 0)) {\n    out.push({ json: { ...base, status: 'first', prev_price: null, change_pct: 0, anomaly_streak: 0, last_suspect_price: null, updated_at: cur.fetched_at, alert: false } });\n    continue;\n  }\n\n  const prevPrice = Number(p.price);\n  const change = round((price - prevPrice) / prevPrice * 100);\n\n  // Normal move -> accept\n  if (Math.abs(change) <= maxPct) {\n    out.push({ json: { ...base, status: 'ok', prev_price: prevPrice, change_pct: change, anomaly_streak: 0, last_suspect_price: null, updated_at: cur.fetched_at, alert: false } });\n    continue;\n  }\n\n  // Big jump. Count it only if consecutive suspicious readings agree with each other\n  let streak = Number(p.anomaly_streak) || 0;\n  const lastSuspect = Number(p.last_suspect_price);\n  if (streak > 0 && lastSuspect > 0 && Math.abs((price - lastSuspect) / lastSuspect * 100) > maxPct) streak = 0;\n\n  if (streak + 1 >= confirmN) {\n    // The market really moved: accept the new price and tell people\n    out.push({ json: { ...base, status: 'confirmed_move', prev_price: prevPrice, change_pct: change, anomaly_streak: 0, last_suspect_price: null, updated_at: cur.fetched_at, alert: true } });\n  } else {\n    // Keep the last good price, remember the suspicious one, alert only on the first sighting\n    out.push({ json: { ...base, status: 'suspect', prev_price: prevPrice, change_pct: change, anomaly_streak: streak + 1, last_suspect_price: price, alert: streak === 0 } });\n  }\n}\n\nreturn out;"
+      },
+      "id": "b3fdcc05-8c70-4797-96e7-45b6a34ee6c9",
+      "name": "Evaluate Rates",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2144,
+        544
+      ]
+    },
+    {
+      "parameters": {
+        "rules": {
+          "values": [
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 2
+                },
+                "conditions": [
+                  {
+                    "id": "6430509f-b243-4d80-b375-4679e04588e5",
+                    "leftValue": "={{ $json.status }}",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    },
+                    "rightValue": "suspect"
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "SUSPECT"
+            }
+          ]
+        },
+        "options": {
+          "fallbackOutput": "extra",
+          "renameFallbackOutput": "UPDATE"
+        }
+      },
+      "id": "47044f20-46b7-4ad0-8fb1-e9cbd59db4ba",
+      "name": "Route by Status",
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3.3,
+      "position": [
+        2416,
+        256
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "update",
+        "collection": "rates",
+        "updateKey": "asset",
+        "fields": "asset,price,currency,source,updated_at,last_checked_at,change_pct,anomaly_streak,last_suspect_price",
+        "options": {}
+      },
+      "id": "444a4146-10a0-4510-8d45-18b15e61c792",
+      "name": "Update Price",
+      "type": "n8n-nodes-base.mongoDb",
+      "typeVersion": 1.2,
+      "position": [
+        2800,
+        272
+      ],
+      "credentials": {
+        "mongoDb": {
+          "id": "xhsfsqq25iZMV5LD",
+          "name": "MongoDB account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "insert",
+        "collection": "rate_history",
+        "fields": "asset,currency,price,source,status,fetched_at",
+        "options": {}
+      },
+      "id": "e6303b51-8da3-46a3-b65e-a89da58e64df",
+      "name": "Append History",
+      "type": "n8n-nodes-base.mongoDb",
+      "typeVersion": 1.2,
+      "position": [
+        2624,
+        368
+      ],
+      "credentials": {
+        "mongoDb": {
+          "id": "xhsfsqq25iZMV5LD",
+          "name": "MongoDB account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "update",
+        "collection": "rates",
+        "updateKey": "asset",
+        "fields": "asset,anomaly_streak,last_suspect_price,last_checked_at,change_pct",
+        "options": {}
+      },
+      "id": "3c36f462-a3e4-4b4c-988a-e50e1e220f63",
+      "name": "Update Suspect Streak",
+      "type": "n8n-nodes-base.mongoDb",
+      "typeVersion": 1.2,
+      "position": [
+        2624,
+        160
+      ],
+      "credentials": {
+        "mongoDb": {
+          "id": "xhsfsqq25iZMV5LD",
+          "name": "MongoDB account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "d2bf0bbf-f1e9-449e-a98b-01178acac555",
+              "leftValue": "={{ $json.alert }}",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "2ef6e14a-2293-4c8e-a429-88e06adb2b4a",
+      "name": "Needs Alert?",
+      "type": "n8n-nodes-base.filter",
+      "typeVersion": 2.2,
+      "position": [
+        2416,
+        544
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const rows = $input.all().map(i => i.json);\nconst fmt = n => Number(n).toLocaleString('en-US', { maximumFractionDigits: 2 });\nconst sign = n => (n > 0 ? '+' : '') + n;\n\nconst lines = rows.map(r => r.status === 'confirmed_move'\n  ? `✅ ${r.asset}: move confirmed after ${r.confirm_readings} consistent readings\\n   ${fmt(r.prev_price)} → ${fmt(r.price)} ${r.currency} (${sign(r.change_pct)}%) - price UPDATED`\n  : `⚠️ ${r.asset}: suspicious jump, price NOT updated\\n   ${fmt(r.prev_price)} → ${fmt(r.price)} ${r.currency} (${sign(r.change_pct)}%)`);\n\nreturn [{ json: { text: `📈 Rates monitor (source: ${rows[0].source})\\n\\n${lines.join('\\n\\n')}` } }];"
+      },
+      "id": "8ab00b30-2223-46bc-93c9-abbdf804dfe4",
+      "name": "Build Alert Digest",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2608,
+        544
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const cfg = $('Config').first().json;\nconst m = $('Load Monitor State').all().map(i => i.json).find(x => x && x.job === 'rates_sync') ?? {};\nconst failures = Number(m.consecutive_failures) || 0;\n\n// \"was down\" = an alert was actually sent (failures reached the alert threshold)\nconst wasDown = failures >= Number(cfg.failure_alert_after);\nconst source = $('Evaluate Rates').first().json.source;\n\nreturn [{\n  json: {\n    job: 'rates_sync',\n    status: 'ok',\n    consecutive_failures: 0,\n    last_success_at: new Date().toISOString(),\n    last_alert_at: null,\n    was_down: wasDown,\n    recovery_message: `✅ Rates sync recovered after ${failures} failed run(s). Active source: ${source}.`\n  }\n}];"
+      },
+      "id": "0333216a-5a04-4226-952b-966932ca29e2",
+      "name": "Check Recovery",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2416,
+        720
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "update",
+        "collection": "monitor_state",
+        "updateKey": "job",
+        "fields": "job,status,consecutive_failures,last_success_at,last_alert_at",
+        "options": {}
+      },
+      "id": "5a4347dc-17c8-460c-a5b4-d1d65551c12f",
+      "name": "Mark Monitor OK",
+      "type": "n8n-nodes-base.mongoDb",
+      "typeVersion": 1.2,
+      "position": [
+        2656,
+        720
+      ],
+      "credentials": {
+        "mongoDb": {
+          "id": "xhsfsqq25iZMV5LD",
+          "name": "MongoDB account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "d2e2ed59-f1c4-4290-a5b7-6c1e0bf3dcec",
+              "leftValue": "={{ $json.was_down }}",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "b671e0d4-1571-41b6-b426-51f35f33715e",
+      "name": "Was Down?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        2416,
+        944
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const cfg = $('Config').first().json;\nconst safe = fn => { try { return fn(); } catch (e) { return null; } };\n\nconst m = $('Load Monitor State').all().map(i => i.json).find(x => x && x.job === 'rates_sync') ?? {};\nconst failures = (Number(m.consecutive_failures) || 0) + 1;\nconst now = new Date().toISOString();\n\nconst primary = safe(() => $('Mark Primary Failed').first().json.reason)\n  ?? safe(() => $('Normalize CoinGecko').first().json.reason) ?? 'unknown';\nconst fallback = safe(() => $('Mark Fallback Failed').first().json.reason)\n  ?? safe(() => $('Normalize Binance').first().json.reason) ?? 'unknown';\n\n// Alert once the threshold is reached, then at most once per cooldown while the outage lasts\nconst sinceAlertMin = m.last_alert_at ? (Date.now() - new Date(m.last_alert_at).getTime()) / 60000 : Infinity;\nconst shouldAlert = failures >= Number(cfg.failure_alert_after) && sinceAlertMin >= Number(cfg.alert_cooldown_min);\n\nconst lastGood = $('Load Previous Rates').all().map(i => i.json.updated_at).filter(Boolean).sort().pop();\nconst staleMin = lastGood ? Math.round((Date.now() - new Date(lastGood).getTime()) / 60000) : null;\n\nconst message =\n  `🔴 Rates sync failing (${failures} runs in a row)\\n` +\n  `Primary (CoinGecko): ${primary}\\n` +\n  `Fallback (Binance): ${fallback}\\n` +\n  `Last good update: ${staleMin === null ? 'never' : staleMin + ' min ago'}\\n` +\n  `Prices in the database are stale until a source recovers.`;\n\nreturn [{\n  json: {\n    job: 'rates_sync', status: 'down',\n    consecutive_failures: failures,\n    last_failure_at: now,\n    last_error: `primary: ${primary} | fallback: ${fallback}`.slice(0, 500),\n    last_alert_at: shouldAlert ? now : (m.last_alert_at ?? null),\n    should_alert: shouldAlert,\n    message\n  }\n}];"
+      },
+      "id": "643c79f1-a69c-4e81-a825-0a03365bafb9",
+      "name": "Evaluate Failure",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1952,
+        1232
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "56b6cbe0-133c-49c4-b278-a3098b468c31",
+              "leftValue": "={{ $json.should_alert }}",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "317b9ce0-adee-4ce4-840d-595b07ca65f9",
+      "name": "Should Alert?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        2144,
+        1232
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const d = $('Evaluate Failure').first().json;\nreturn [{ json: {\n  job: d.job, status: d.status, consecutive_failures: d.consecutive_failures,\n  last_failure_at: d.last_failure_at, last_error: d.last_error, last_alert_at: d.last_alert_at\n} }];"
+      },
+      "id": "1980dd7f-9637-4e09-853e-4af37768e4ae",
+      "name": "Prepare Monitor Doc",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2576,
+        1248
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "update",
+        "collection": "monitor_state",
+        "updateKey": "job",
+        "fields": "job,status,consecutive_failures,last_failure_at,last_error,last_alert_at",
+        "options": {}
+      },
+      "id": "4b9c963e-a4b7-45ae-a18a-2f937f9fab69",
+      "name": "Update Monitor (failure)",
+      "type": "n8n-nodes-base.mongoDb",
+      "typeVersion": 1.2,
+      "position": [
+        2768,
+        1248
+      ],
+      "credentials": {
+        "mongoDb": {
+          "id": "xhsfsqq25iZMV5LD",
+          "name": "MongoDB account"
+        }
+      }
+    },
+    {
+      "parameters": {},
+      "id": "63d954cb-7a06-4fa7-8d71-e44490a1cf5f",
+      "name": "Error Trigger",
+      "type": "n8n-nodes-base.errorTrigger",
+      "typeVersion": 1,
+      "position": [
+        832,
+        256
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "send",
+        "phoneNumberId": "={{ $('Config').first().json.whatsapp_phone_number_id }}",
+        "recipientPhoneNumber": "={{ $('Config').first().json.alert_whatsapp }}",
+        "textBody": "={{ $json.recovery_message }}",
+        "additionalFields": {}
+      },
+      "id": "b3bb0e0c-ed71-40b1-aef1-5ae2f04427e7",
+      "name": "Recovery",
+      "type": "n8n-nodes-base.whatsApp",
+      "typeVersion": 1.1,
+      "position": [
+        2656,
+        928
+      ],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "webhookId": "980215fd-d663-40a1-b37c-c91a5a488210",
+      "credentials": {
+        "whatsAppApi": {
+          "id": "cnrN2p9WK45KO5kL",
+          "name": "WhatsApp account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "send",
+        "phoneNumberId": "={{ $('Config').first().json.whatsapp_phone_number_id }}",
+        "recipientPhoneNumber": "={{ $('Config').first().json.alert_whatsapp }}",
+        "textBody": "={{ $json.text }}",
+        "additionalFields": {}
+      },
+      "id": "608bf14c-b7a7-4029-8566-5da2f5bab698",
+      "name": "Rate Alert",
+      "type": "n8n-nodes-base.whatsApp",
+      "typeVersion": 1.1,
+      "position": [
+        2800,
+        544
+      ],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "webhookId": "84cd24ca-e82f-42d9-b288-61884dbbc2ca",
+      "credentials": {
+        "whatsAppApi": {
+          "id": "cnrN2p9WK45KO5kL",
+          "name": "WhatsApp account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "send",
+        "phoneNumberId": "={{ $('Config').first().json.whatsapp_phone_number_id }}",
+        "recipientPhoneNumber": "={{ $('Config').first().json.alert_whatsapp }}",
+        "textBody": "={{ $('Evaluate Failure').first().json.message }}",
+        "additionalFields": {}
+      },
+      "id": "70482179-1b10-4bac-a3a3-301c5ddd9808",
+      "name": "Source Failure",
+      "type": "n8n-nodes-base.whatsApp",
+      "typeVersion": 1.1,
+      "position": [
+        2352,
+        1136
+      ],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "webhookId": "7f2fa95f-be8b-4d51-bc4b-b360141469ee",
+      "credentials": {
+        "whatsAppApi": {
+          "id": "cnrN2p9WK45KO5kL",
+          "name": "WhatsApp account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "send",
+        "phoneNumberId": "REPLACE_PHONE_NUMBER_ID",
+        "recipientPhoneNumber": "REPLACE_ADMIN_WHATSAPP",
+        "textBody": "=⚠️ Workflow error: {{ $json.workflow.name }}\nNode: {{ $json.execution.lastNodeExecuted }}\nError: {{ $json.execution.error.message }}\n{{ $json.execution.url }}",
+        "additionalFields": {}
+      },
+      "id": "ae801354-541b-4dd6-a541-f413851dec3a",
+      "name": "Error Alert",
+      "type": "n8n-nodes-base.whatsApp",
+      "typeVersion": 1.1,
+      "position": [
+        1024,
+        256
+      ],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "webhookId": "88a28b73-e1e0-4bf6-9d2b-62d01bb81a2c",
+      "credentials": {
+        "whatsAppApi": {
+          "id": "cnrN2p9WK45KO5kL",
+          "name": "WhatsApp account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "content": "",
+        "height": 204,
+        "width": 432,
+        "color": 3
+      },
+      "id": "c5240025-b2ed-477d-ae6a-66f1c35c0dd1",
+      "name": "Note - Overview1",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        784,
+        208
+      ]
+    }
+  ],
+  "connections": {
+    "Every 5 Minutes": {
+      "main": [
+        [
+          {
+            "node": "Config",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Config": {
+      "main": [
+        [
+          {
+            "node": "Load Monitor State",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Load Monitor State": {
+      "main": [
+        [
+          {
+            "node": "Load Previous Rates",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Load Previous Rates": {
+      "main": [
+        [
+          {
+            "node": "Build Requests",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Requests": {
+      "main": [
+        [
+          {
+            "node": "Fetch CoinGecko",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fetch CoinGecko": {
+      "main": [
+        [
+          {
+            "node": "Normalize CoinGecko",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Mark Primary Failed",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Normalize CoinGecko": {
+      "main": [
+        [
+          {
+            "node": "Primary Valid?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Primary Valid?": {
+      "main": [
+        [
+          {
+            "node": "Evaluate Rates",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Fetch Binance (fallback)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Mark Primary Failed": {
+      "main": [
+        [
+          {
+            "node": "Fetch Binance (fallback)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fetch Binance (fallback)": {
+      "main": [
+        [
+          {
+            "node": "Normalize Binance",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Mark Fallback Failed",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Normalize Binance": {
+      "main": [
+        [
+          {
+            "node": "Fallback Valid?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fallback Valid?": {
+      "main": [
+        [
+          {
+            "node": "Evaluate Rates",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Evaluate Failure",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Mark Fallback Failed": {
+      "main": [
+        [
+          {
+            "node": "Evaluate Failure",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Evaluate Rates": {
+      "main": [
+        [
+          {
+            "node": "Route by Status",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Needs Alert?",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Check Recovery",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Route by Status": {
+      "main": [
+        [
+          {
+            "node": "Update Suspect Streak",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Update Price",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Append History",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Needs Alert?": {
+      "main": [
+        [
+          {
+            "node": "Build Alert Digest",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Alert Digest": {
+      "main": [
+        [
+          {
+            "node": "Rate Alert",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Check Recovery": {
+      "main": [
+        [
+          {
+            "node": "Mark Monitor OK",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Was Down?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Was Down?": {
+      "main": [
+        [
+          {
+            "node": "Recovery",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Evaluate Failure": {
+      "main": [
+        [
+          {
+            "node": "Should Alert?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Should Alert?": {
+      "main": [
+        [
+          {
+            "node": "Source Failure",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Prepare Monitor Doc",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare Monitor Doc": {
+      "main": [
+        [
+          {
+            "node": "Update Monitor (failure)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Error Trigger": {
+      "main": [
+        [
+          {
+            "node": "Error Alert",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Source Failure": {
+      "main": [
+        [
+          {
+            "node": "Prepare Monitor Doc",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "pinData": {},
+  "meta": {
+    "instanceId": "7487bf060b3b98602de185e1d98fbf8fedb850f0ff8821e68d763bce0ea4b6fd"
+  }
+}

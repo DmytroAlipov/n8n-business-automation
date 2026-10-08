@@ -176,7 +176,7 @@ db.support_tickets.createIndex({ status: 1, sla_alerted: 1, sla_due_at: 1 });
 
 ### Steps
 
-1. **Import** `customer-support-workflow.json` in n8n (*Workflows → Import from file*).
+1. **Import** `customer_support_triage.json` in n8n (*Workflows → Import from file*).
 2. **Create credentials** and attach them to the nodes: Header Auth (both webhooks), OpenAI, MongoDB, Gmail OAuth2, WhatsApp.
 3. **Create the Data Table** `support_tickets` with the columns above.
 4. **Fill in configuration** in the `Config` and `Watchdog Config` nodes, and the recipient / phone number ID in the `Error Alert` node.
