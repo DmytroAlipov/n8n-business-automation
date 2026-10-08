@@ -1,33 +1,12 @@
 # Fraud check workflow for n8n
 
-
+<img width="1386" height="682" alt="E-commerce Order Fraud Detection   Risk Scoring" src="https://github.com/user-attachments/assets/1e89b371-7402-472a-9db5-3024b4408276" />
 
 A webhook that scores incoming orders for fraud risk and tells your shop backend what to do with them: allow, monitor, send to manual review, or block.
 
 The score itself comes from a handful of plain rules. An LLM then reads the result and writes a short note for the fraud team and a neutral message for the customer. It never gets to change the score, and it can't soften a decision the rules already made. If OpenAI is down or returns garbage, the workflow still works and falls back to the rules alone.
 
 Everything is stored in MongoDB, and Slack and email notifications go out depending on the risk level.
-
-## Flow
-
-```mermaid
-flowchart TD
-    A[Webhook, header auth] --> B[Validate + score]
-    B -- bad payload --> X[400]
-    B --> C{Not LOW?}
-    C -- yes --> D[LLM analyst]
-    C -- no --> E
-    D --> E[Parse + guardrails]
-    E --> R[Respond to caller]
-    E --> S[(MongoDB)]
-    S --> L{Risk level}
-    L -- HIGH --> H[Slack, ops email, customer email]
-    L -- MEDIUM --> M{manual_review?}
-    M -- yes --> M1[Slack, customer email]
-    L -- LOW --> N[nothing]
-```
-
-The caller gets its answer right after the decision is made. Saving to the database and sending notifications happen in parallel and don't hold up the response.
 
 ## Calling it
 
