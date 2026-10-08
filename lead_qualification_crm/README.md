@@ -68,7 +68,7 @@ Required: `name`, `email`, `message`. All other fields are optional.
 
 ## Setup
 
-1. Import `workflow.json` into n8n (Workflows -> Import from File).
+1. Import `lead_qualification_crm.json` into n8n (Workflows -> Import from File).
 2. Configure credentials: MongoDB, OpenAI, HubSpot (App Token), Slack, Gmail (OAuth2), Google Sheets (OAuth2).
 3. Create a Data Table named `qualified_leads` with columns: `lead_id`, `received_at`, `name`, `email`, `company`, `score`, `temperature`, `intent`, `fit`, `next_action`, `qualified_at`.
 4. In the **Qualified Leads** node, replace `REPLACE_WITH_GOOGLE_SHEET_ID` with your spreadsheet ID. The sheet must be named `Qualified Leads` and have the same columns as the Data Table.

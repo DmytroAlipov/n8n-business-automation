@@ -1,5 +1,16 @@
 # n8n Business Automation
 
+## Workflows at a glance
+
+| # | Workflow | Trigger | Uses AI | Main integrations |
+|---|---|---|---|---|
+| 1 | [Customer Support Automation](#1-customer-support-automation) | Webhook, schedule (SLA watchdog) | Yes | MongoDB, n8n Data Tables, WhatsApp, Gmail |
+| 2 | [Lead Qualification Automation](#2-lead-qualification-automation) | Webhook | Yes | MongoDB, n8n Data Tables, HubSpot, Slack, Gmail, Google Sheets |
+| 3 | [E-commerce Fraud Detection](#3-e-commerce-fraud-detection) | Webhook | Yes, only when needed | MongoDB, Slack, Gmail |
+| 4 | [Crypto Rates Sync with Anomaly Guard](#4-crypto-rates-sync-with-anomaly-guard) | Schedule | No | MongoDB, CoinGecko, Binance, WhatsApp |
+
+---
+
 ## Workflows
 
 ### 1. Customer Support Automation
@@ -15,6 +26,9 @@ AI-powered customer support workflow that:
 * escalates complex cases to support staff;
 * monitors SLA deadlines.
 
+**Stack:** n8n · OpenAI · MongoDB · n8n Data Tables · WhatsApp Business Cloud API · Gmail
+**Docs:** [`customer_support_triage/README.md`](customer_support_triage/README.md)
+
 ### 2. Lead Qualification Automation
 
 Automated B2B lead processing workflow that:
@@ -28,6 +42,9 @@ Automated B2B lead processing workflow that:
 * routes leads to CRM and communication channels;
 * generates personalized follow-ups.
 
+**Stack:** n8n · OpenAI · MongoDB · n8n Data Tables · HubSpot · Slack · Gmail · Google Sheets
+**Docs:** [`lead_qualification_crm/README.md`](lead_qualification_crm/README.md)
+
 ### 3. E-commerce Fraud Detection
 
 Automated e-commerce transaction security and risk analysis workflow that:
@@ -40,3 +57,69 @@ Automated e-commerce transaction security and risk analysis workflow that:
 * stores transactional and audit logs in MongoDB;
 * triggers real-time alerts via Slack and email notifications via Gmail for manual reviews;
 * sends customer-safe payment review updates without exposing internal security metrics.
+
+**Stack:** n8n · LLM · MongoDB · Slack · Gmail
+**Docs:** [`ecommerce_order_fraud_detection/README.md`](ecommerce_order_fraud_detection/README.md)
+
+### 4. Crypto Rates Sync with Anomaly Guard
+
+Scheduled, AI-free data synchronization workflow that keeps cryptocurrency prices in MongoDB trustworthy:
+
+* fetches prices on a schedule from CoinGecko with an automatic Binance fallback (on request errors **and** on incomplete or invalid data);
+* compares every new price with the last accepted one;
+* holds suspicious jumps and accepts them only after N consecutive, mutually consistent readings, so a real market move is never blocked forever;
+* stores accepted prices and an append-only price history;
+* tracks the health of the data sources in MongoDB (consecutive failures, alert cooldown);
+* sends WhatsApp alerts: one digest per run for price anomalies, outage alerts, and a recovery notice;
+* retries an undelivered outage alert on the next run instead of losing it;
+* reports unexpected errors through a global error handler.
+
+**Stack:** n8n · MongoDB · CoinGecko API · Binance public API · WhatsApp Business Cloud API
+**Docs:** [`rates_sync_with_anomaly_guard/README.md`](rates_sync_with_anomaly_guard/README.md)
+
+---
+
+## Design principles
+
+The same engineering ideas appear across the workflows.
+
+- **AI suggests, rules decide.** Where an LLM is used, its output is validated against a schema, clamped, and then adjusted by deterministic rules (escalation keywords, repeat-contact detection, scoring bonuses, risk thresholds). The model cannot talk the workflow into a better outcome.
+- **Fail-safe defaults.** When the AI fails, work is routed to a human or to a safe middle ground instead of being auto-answered or silently dropped.
+- **Untrusted input.** Requests are validated, normalized and length-capped; AI prompts treat user text as data; outbound text is sanitized (links removed, Slack text escaped, fixed templates for risky cases); only the data the model needs is sent to it.
+- **Idempotency and abuse protection.** Duplicate submissions are detected, repeated submissions are rate-limited, and public endpoints do not leak internal scores.
+- **State in the database, not in the workflow.** Streak counters, failure counters, SLA flags and rate-limit checks are stored in MongoDB, so behaviour survives restarts and spans scheduled runs.
+- **Resilient integrations.** External calls use retries and error outputs; one failing integration does not stop the other branches; alerts are deduplicated so people are not spammed.
+- **Observable.** A global Error Trigger reports the failing node, the error and an execution link; routing decisions are stored with their reasons (for example `escalation_reasons`, `score_breakdown`).
+- **Configurable.** Thresholds, limits and recipients live in a `Config` node instead of being hard-coded in expressions.
+
+---
+
+## Getting started
+
+### Requirements
+
+- An n8n instance with the required nodes: **Data Tables** (workflows 1–2) and **AI Agent / LangChain** nodes (workflows 1–3; see each README for details)
+- MongoDB
+- OpenAI API key (workflows 1–3)
+- Accounts for the integrations you plan to use: WhatsApp Business Cloud API, Gmail, Slack, HubSpot, Google Sheets
+
+### Import a workflow
+
+1. Open the workflow folder and read its `README.md`.
+2. In n8n choose *Workflows → Import from file* and select the workflow's `.json` file from its folder (the exact filename is listed in its README).
+3. Create the credentials the workflow needs and attach them to the nodes.
+4. Create the required MongoDB indexes and any n8n Data Tables listed in the workflow README.
+5. Fill in the `Config` node (recipients, thresholds, limits).
+6. In *Workflow settings → Error Workflow* select the workflow itself, so its `Error Trigger` fires for its own failures.
+7. Test with the `curl` examples in the workflow README, then activate it.
+
+---
+
+## Before you publish or deploy
+
+- **Remove credential references.** Exported workflows contain credential IDs and an instance ID. Delete the `credentials` blocks and `meta.instanceId` before publishing the JSON, and never commit real phone numbers, e-mail addresses or tokens.
+- **WhatsApp 24-hour window.** Free-form WhatsApp messages can only be sent within 24 hours of the recipient's last message to your business number. Replies to customers who just wrote are fine; staff alerts and digests should use approved **template** messages in production.
+- **Public webhooks.** Add a CAPTCHA or honeypot on the frontend, restrict CORS to your domain and rate-limit at the reverse proxy.
+- **Personal data.** Tickets and leads contain customer data. Define a retention policy and restrict database access.
+- **Check the update nodes.** In MongoDB *update* nodes, make sure **Upsert** is enabled where the workflow relies on creating documents (for example, the rates workflow).
+- **Tune the numbers.** Thresholds, SLA targets and scoring bonuses are examples, not recommendations.

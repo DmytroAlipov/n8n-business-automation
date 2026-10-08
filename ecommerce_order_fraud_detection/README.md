@@ -101,7 +101,7 @@ Separately, Slack gets a message if the database write fails or if the workflow 
 
 ## Setup
 
-1. Import `fraud_check_workflow_v2.json` (Workflows, then Import from File).
+1. Import `ecommerce_order_fraud_detection.json` (Workflows, then Import from File).
 2. Create credentials and attach them: Header Auth for the webhook, OpenAI, MongoDB, Slack, Gmail.
 3. Open the first Code node ("Normalize Order & Build Risk Signals") and edit `CONFIG` at the top. Company name, the fraud team's email, thresholds and weights all live there.
 4. Invite the Slack bot to `#fraud-alerts`, or change the channel name in the Slack nodes.
