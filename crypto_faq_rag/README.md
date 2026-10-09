@@ -2,8 +2,11 @@
 
 Two n8n workflows for a grounded cryptocurrency-exchange FAQ assistant built with OpenAI, Qdrant, MongoDB Chat Memory, n8n Data Tables, and Slack.
 
-- `crypto_faq_rag_ingest.json` — protected `POST /kb/ingest` endpoint for indexing FAQ documents.
-- `crypto_faq_rag_ask.json` — public `POST /kb/ask` endpoint for answering questions using retrieval and three AI agents (Router, Answer, Critic).
+- `crypto_faq_rag_ingest.json` — protected `POST /kb/ingest` endpoint for indexing FAQ documents
+<img width="1486" height="486" alt="Crypto FAQ RAG (Ingest)" src="https://github.com/user-attachments/assets/dd7ae759-ab1d-4d1e-a6fa-6db732324508" />
+  
+- `crypto_faq_rag_ask.json` — public `POST /kb/ask` endpoint for answering questions using retrieval and three AI agents (Router, Answer, Critic)
+<img width="1454" height="567" alt="Crypto FAQ RAG (Ask)" src="https://github.com/user-attachments/assets/f908df48-c11f-48ff-9abe-1481a227df6b" />
 
 ## Requirements
 
