@@ -8,6 +8,8 @@
 | 2 | [Lead Qualification Automation](#2-lead-qualification-automation) | Webhook | Yes | MongoDB, n8n Data Tables, HubSpot, Slack, Gmail, Google Sheets |
 | 3 | [E-commerce Fraud Detection](#3-e-commerce-fraud-detection) | Webhook | Yes, only when needed | MongoDB, Slack, Gmail |
 | 4 | [Crypto Rates Sync with Anomaly Guard](#4-crypto-rates-sync-with-anomaly-guard) | Schedule | No | MongoDB, CoinGecko, Binance, WhatsApp |
+| 5 | [Crypto Exchange FAQ Assistant](#5-crypto-exchange-faq-assistant) | Webhooks (ingest and ask) | Yes | OpenAI, Qdrant, MongoDB, n8n Data Tables, Slack |
+| 6 | [Data Tables Retention Cleanup](#6-data-tables-retention-cleanup) | Schedule, manual | No | n8n Data Tables, Slack |
 
 ---
 
@@ -81,6 +83,32 @@ Scheduled, AI-free data synchronization workflow that keeps cryptocurrency price
 
 **Docs:** [`rates_sync_with_anomaly_guard/README.md`](rates_sync_with_anomaly_guard/README.md)
 
+### 5. Crypto Exchange FAQ Assistant
+
+Two workflows provide a retrieval-grounded FAQ service for a cryptocurrency exchange:
+
+* the protected ingest endpoint validates FAQ documents, chunks and embeds them, and indexes them in Qdrant;
+* the ask endpoint retrieves relevant passages and uses Router, Answer and Critic agents to classify questions and validate cited answers;
+* account-specific, suspected-fraud and complaint questions are escalated instead of answered from public FAQ material;
+* unanswered questions and QA results are tracked in n8n Data Tables, with alerts and escalations sent to Slack.
+
+**Stack:** n8n · OpenAI · Qdrant · MongoDB Chat Memory · n8n Data Tables · Slack
+
+**Docs:** [`crypto_faq_rag/README.md`](crypto_faq_rag/README.md)
+
+### 6. Data Tables Retention Cleanup
+
+Scheduled, AI-free maintenance workflow that removes old rows from the configured FAQ-assistant Data Tables:
+
+* plans cleanup by numeric epoch-millisecond timestamp columns;
+* defaults to dry-run, with a per-table deletion cap and a best-effort run lock;
+* records per-table results in `maintenance_log` and sends Slack summaries for problems (or every run when enabled);
+* does not clean MongoDB collections or Data Tables that are not listed in its `Config`.
+
+**Stack:** n8n · n8n Data Tables · Slack
+
+**Docs:** [`tables_cleanup/README.md`](tables_cleanup/README.md)
+
 ---
 
 ## Design principles
@@ -102,9 +130,10 @@ The same engineering ideas appear across the workflows.
 
 ### Requirements
 
-- An n8n instance with the required nodes: **Data Tables** (workflows 1–2) and **AI Agent / LangChain** nodes (workflows 1–3; see each README for details)
+- An n8n instance with the required nodes: **Data Tables** (workflows 1, 2, 5 and 6) and **AI Agent / LangChain** nodes (workflows 1–3 and 5; see each README for details)
 - MongoDB
-- OpenAI API key (workflows 1–3)
+- OpenAI API key (workflows 1–3 and 5)
+- Qdrant (workflow 5)
 - Accounts for the integrations you plan to use: WhatsApp Business Cloud API, Gmail, Slack, HubSpot, Google Sheets
 
 ### Import a workflow
