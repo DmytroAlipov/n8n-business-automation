@@ -1,0 +1,963 @@
+{
+  "nodes": [
+    {
+      "parameters": {
+        "content": "## Data Tables Retention Cleanup\nRuns daily at 03:00 (workflow timezone **Europe/Madrid**) and deletes rows older than the retention period from the n8n Data Tables listed in `Config`.\n\nSafety: dry-run flag, per-table delete cap, run lock, per-table results in `maintenance_log`, Slack only on problems.\nTables of workflows 1-2 are intentionally NOT listed.",
+        "height": 190,
+        "width": 604
+      },
+      "id": "b30a07c4-8c3a-4bff-8cfd-cf2f77163258",
+      "name": "Note: Overview",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        128,
+        -144
+      ]
+    },
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "cronExpression",
+              "expression": "0 3 * * *"
+            }
+          ]
+        }
+      },
+      "id": "0d26ba16-b329-4a85-a11e-f21ba9d4751a",
+      "name": "Schedule 03:00",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        128,
+        192
+      ]
+    },
+    {
+      "parameters": {},
+      "id": "aaed7923-d593-40d0-85e3-cb0465cf379a",
+      "name": "Manual Run",
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [
+        128,
+        384
+      ]
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "be067419-c09d-44e4-a790-11db982deaa9",
+              "name": "cfg",
+              "value": "{\n  \"retention_days_default\": 30,\n  \"dry_run\": true,\n  \"max_delete_per_table\": 5000,\n  \"lock_timeout_minutes\": 120,\n  \"notify_always\": false,\n  \"slack_channel_id\": \"C0000000000\",\n  \"tables\": [\n    {\n      \"name\": \"kb_qa_log\",\n      \"table_id\": \"REPLACE_WITH_TABLE_ID\",\n      \"ts_column\": \"ts\",\n      \"retention_days\": 30\n    },\n    {\n      \"name\": \"kb_unanswered\",\n      \"table_id\": \"REPLACE_WITH_TABLE_ID\",\n      \"ts_column\": \"last_seen_ms\",\n      \"retention_days\": 30\n    },\n    {\n      \"name\": \"kb_alert_state\",\n      \"table_id\": \"REPLACE_WITH_TABLE_ID\",\n      \"ts_column\": \"updated_ms\",\n      \"retention_days\": 7\n    },\n    {\n      \"name\": \"kb_documents\",\n      \"table_id\": \"REPLACE_WITH_TABLE_ID\",\n      \"ts_column\": \"cleanup_ts\",\n      \"retention_days\": 30\n    },\n    {\n      \"name\": \"maintenance_log\",\n      \"table_id\": \"REPLACE_WITH_TABLE_ID\",\n      \"ts_column\": \"ts\",\n      \"retention_days\": 90\n    }\n  ]\n}",
+              "type": "object"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "8e609d42-13ec-451f-aad8-41e04e88ea09",
+      "name": "Config",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        416,
+        288
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "get",
+        "dataTableId": {
+          "__rl": true,
+          "mode": "list",
+          "value": "",
+          "cachedResultName": "maintenance_log"
+        },
+        "matchType": "allConditions",
+        "filters": {
+          "conditions": [
+            {
+              "keyName": "table_name",
+              "keyValue": "__run__"
+            }
+          ]
+        },
+        "limit": 1
+      },
+      "id": "564a2e21-4224-4f83-ba43-13153c94a08a",
+      "name": "Get Lock",
+      "type": "n8n-nodes-base.dataTable",
+      "typeVersion": 1,
+      "position": [
+        576,
+        288
+      ],
+      "alwaysOutputData": true,
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "const cfg = $('Config').first().json.cfg;\nconst row = $input.all().map(i => i.json).find(r => r.table_name === '__run__');\nconst started = Number(row && row.ts) || 0;\nconst running = !!row && row.status === 'running' && (Date.now() - started) < cfg.lock_timeout_minutes * 60000;\nreturn [{ json: { can_run: !running, run_id: 'run-' + Date.now(), previous_status: row ? row.status : 'none' } }];"
+      },
+      "id": "42606229-0d22-452f-8944-edc0dff7f679",
+      "name": "Evaluate Lock",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        752,
+        288
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "ef56e3d3-0c06-46b6-a016-a78cf9810d9f",
+              "leftValue": "={{ !!$json.can_run }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "looseTypeValidation": true,
+        "options": {}
+      },
+      "id": "dce44792-118a-47ca-83a3-217caa33783d",
+      "name": "Can Run?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        928,
+        288
+      ]
+    },
+    {
+      "parameters": {
+        "select": "channel",
+        "channelId": {
+          "__rl": true,
+          "value": "={{ $('Config').first().json.cfg.slack_channel_id }}",
+          "mode": "id"
+        },
+        "text": "=:hourglass: Retention cleanup skipped: the previous run is still marked as running (lock timeout not reached). Run `{{ $json.run_id }}`.",
+        "otherOptions": {}
+      },
+      "id": "cf4080f7-750c-4c0b-b2b9-538056db18cb",
+      "name": "Slack Overlap Warning",
+      "type": "n8n-nodes-base.slack",
+      "typeVersion": 2.3,
+      "position": [
+        1232,
+        400
+      ],
+      "webhookId": "109a1f0b-8125-4b0c-a95c-1dbef5f4947b",
+      "credentials": {
+        "slackApi": {
+          "id": "PbK8zg2ZO8xUQwIE",
+          "name": "Slack account"
+        }
+      },
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "operation": "upsert",
+        "dataTableId": {
+          "__rl": true,
+          "mode": "list",
+          "value": "",
+          "cachedResultName": "maintenance_log"
+        },
+        "matchType": "allConditions",
+        "filters": {
+          "conditions": [
+            {
+              "keyName": "table_name",
+              "keyValue": "__run__"
+            }
+          ]
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "run_id": "={{ $json.run_id }}",
+            "table_name": "__run__",
+            "status": "running",
+            "candidates": 0,
+            "deleted": 0,
+            "dry_run": 0,
+            "message": "lock acquired",
+            "ts": "={{ Date.now() }}",
+            "cutoff_iso": ""
+          },
+          "matchingColumns": [],
+          "schema": [],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "options": {}
+      },
+      "id": "9bd35ff6-d79e-4cea-9faf-300b7927b6b0",
+      "name": "Acquire Lock",
+      "type": "n8n-nodes-base.dataTable",
+      "typeVersion": 1,
+      "position": [
+        1168,
+        176
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const cfg = $('Config').first().json.cfg;\nconst run = $('Evaluate Lock').first().json;\nconst now = Date.now();\nreturn cfg.tables.map(t => {\n  const days = Number(t.retention_days != null ? t.retention_days : cfg.retention_days_default);\n  let invalid = '';\n  if (!t.name || !t.table_id || /^REPLACE/.test(String(t.table_id))) invalid = 'table_id is not configured';\n  else if (!t.ts_column) invalid = 'ts_column is required';\n  else if (!Number.isFinite(days) || days < 1) invalid = 'retention_days must be >= 1';\n  const cutoff = now - (Number.isFinite(days) ? days : 0) * 86400000;\n  return { json: {\n    run_id: run.run_id, table_name: t.name, table_id: t.table_id, ts_column: t.ts_column,\n    retention_days: days, cutoff_ms: cutoff, cutoff_iso: new Date(cutoff).toISOString(),\n    invalid, dry_run: cfg.dry_run === true, max_delete: cfg.max_delete_per_table,\n  } };\n});"
+      },
+      "id": "7f8d5808-e267-495c-a6fc-a85906df202a",
+      "name": "Build Plan",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1344,
+        176
+      ]
+    },
+    {
+      "parameters": {
+        "options": {}
+      },
+      "id": "19a2743e-751b-4e4f-a309-5adc7e1e799c",
+      "name": "Loop Tables",
+      "type": "n8n-nodes-base.splitInBatches",
+      "typeVersion": 3,
+      "position": [
+        1552,
+        176
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "5b8d19d2-f45b-4dc9-9e2a-86bb26ac6bab",
+              "leftValue": "={{ !!$json.invalid }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "looseTypeValidation": true,
+        "options": {}
+      },
+      "id": "c87e80dc-d218-44e1-87d0-d9ed1d3ba7c9",
+      "name": "Table Invalid?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        1824,
+        240
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "get",
+        "dataTableId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "={{ $json.table_id }}"
+        },
+        "matchType": "allConditions",
+        "filters": {
+          "conditions": [
+            {
+              "keyName": "={{ $json.ts_column }}",
+              "condition": "lt",
+              "keyValue": "={{ $json.cutoff_ms }}"
+            },
+            {
+              "keyName": "={{ $json.ts_column }}",
+              "condition": "gt",
+              "keyValue": 0
+            }
+          ]
+        },
+        "limit": "={{ $json.max_delete + 1 }}"
+      },
+      "id": "a0931153-8d26-44ea-b0b9-3292df22a070",
+      "name": "Count Candidates",
+      "type": "n8n-nodes-base.dataTable",
+      "typeVersion": 1,
+      "position": [
+        2064,
+        320
+      ],
+      "alwaysOutputData": true,
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "const t = $('Loop Tables').first().json;\nconst r = $input.all().map(i => i.json);\nconst err = r.find(x => x.error);\nconst n = r.filter(x => x.id !== undefined && !x.error).length;\nlet status, action, message;\nif (err) { status = 'error'; action = 'NONE'; message = String(err.error && err.error.message ? err.error.message : err.error).slice(0, 300); }\nelse if (n === 0) { status = 'ok'; action = 'NONE'; message = 'nothing to delete'; }\nelse if (n > t.max_delete) { status = 'blocked'; action = 'NONE'; message = 'candidates exceed the safety cap (' + t.max_delete + '); raise max_delete_per_table or clean manually'; }\nelse if (t.dry_run) { status = 'dry_run'; action = 'NONE'; message = 'would delete ' + n + ' rows'; }\nelse { status = 'pending_delete'; action = 'DELETE'; message = n + ' rows to delete'; }\nreturn [{ json: { ...t, candidates: n, status, action, message } }];"
+      },
+      "id": "90e878a3-ad78-46c8-af23-49d1e9d8f7d4",
+      "name": "Evaluate Table",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2240,
+        320
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "94855f71-27ed-4b37-aa52-22522dd60eee",
+              "leftValue": "={{ $json.action === 'DELETE' }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "looseTypeValidation": true,
+        "options": {}
+      },
+      "id": "af3e9863-d27f-40f7-8be9-5d51d1314da4",
+      "name": "Delete?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        2416,
+        320
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "deleteRows",
+        "dataTableId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "={{ $json.table_id }}"
+        },
+        "matchType": "allConditions",
+        "filters": {
+          "conditions": [
+            {
+              "keyName": "={{ $json.ts_column }}",
+              "condition": "lt",
+              "keyValue": "={{ $json.cutoff_ms }}"
+            },
+            {
+              "keyName": "={{ $json.ts_column }}",
+              "condition": "gt",
+              "keyValue": 0
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "cf1742b4-071c-46c8-865f-572bbe85974d",
+      "name": "Delete Rows",
+      "type": "n8n-nodes-base.dataTable",
+      "typeVersion": 1,
+      "position": [
+        2672,
+        192
+      ],
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "const t = $('Evaluate Table').first().json;\nconst r = $input.first().json;\nif (r && r.error) {\n  return [{ json: { run_id: t.run_id, table_name: t.table_name, status: 'error', candidates: t.candidates, deleted: 0, dry_run: 0,\n    message: 'delete failed: ' + String(r.error.message || r.error).slice(0, 250), cutoff_iso: t.cutoff_iso } }];\n}\nreturn [{ json: { run_id: t.run_id, table_name: t.table_name, status: 'deleted', candidates: t.candidates, deleted: t.candidates, dry_run: 0,\n  message: 'deleted ' + t.candidates + ' rows older than ' + t.retention_days + ' days', cutoff_iso: t.cutoff_iso } }];"
+      },
+      "id": "9052dea2-52fa-46ce-b2d0-ccc3c1e5b595",
+      "name": "Result Deleted",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2832,
+        192
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const t = $input.first().json;\nreturn [{ json: { run_id: t.run_id, table_name: t.table_name, status: t.status, candidates: t.candidates, deleted: 0,\n  dry_run: t.dry_run ? 1 : 0, message: t.message, cutoff_iso: t.cutoff_iso } }];"
+      },
+      "id": "29be16d0-9193-40e0-b38c-b8ecd90e08c8",
+      "name": "Result Evaluated",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2688,
+        416
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const t = $input.first().json;\nreturn [{ json: { run_id: t.run_id, table_name: t.table_name, status: 'error', candidates: 0, deleted: 0,\n  dry_run: t.dry_run ? 1 : 0, message: t.invalid, cutoff_iso: t.cutoff_iso } }];"
+      },
+      "id": "79aaae92-2ded-4d3f-a56c-bb1ded89bef7",
+      "name": "Result Invalid",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2240,
+        144
+      ]
+    },
+    {
+      "parameters": {
+        "dataTableId": {
+          "__rl": true,
+          "mode": "list",
+          "value": "",
+          "cachedResultName": "maintenance_log"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "run_id": "={{ $json.run_id }}",
+            "table_name": "={{ $json.table_name }}",
+            "status": "={{ $json.status }}",
+            "candidates": "={{ $json.candidates }}",
+            "deleted": "={{ $json.deleted }}",
+            "dry_run": "={{ $json.dry_run }}",
+            "message": "={{ String($json.message).slice(0, 300) }}",
+            "ts": "={{ Date.now() }}",
+            "cutoff_iso": "={{ $json.cutoff_iso }}"
+          },
+          "matchingColumns": [],
+          "schema": [],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "options": {}
+      },
+      "id": "591a235e-e9c1-4d53-8b63-b2b0c8a0cd15",
+      "name": "Write Log",
+      "type": "n8n-nodes-base.dataTable",
+      "typeVersion": 1,
+      "position": [
+        3136,
+        416
+      ],
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "const cfg = $('Config').first().json.cfg;\nconst run = $('Evaluate Lock').first().json;\nconst esc = (s) => String(s ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');\nconst rows = $input.all().map(i => i.json).filter(r => r.table_name);\nconst deleted = rows.reduce((a, r) => a + (Number(r.deleted) || 0), 0);\nconst problems = rows.filter(r => ['error', 'blocked'].includes(r.status));\nconst head = (problems.length ? ':warning:' : ':broom:') + ' *Retention cleanup* `' + esc(run.run_id) + '`' + (cfg.dry_run ? ' (DRY RUN)' : '') +\n  ' - deleted ' + deleted + ' rows, problems: ' + problems.length;\nconst lines = rows.map(r => '• `' + esc(r.table_name) + '`: ' + esc(r.status) + ', candidates ' + (Number(r.candidates) || 0) + ', deleted ' + (Number(r.deleted) || 0) +\n  (r.message ? ' (' + esc(String(r.message).slice(0, 140)) + ')' : ''));\nreturn [{ json: {\n  deleted, problems: problems.length, notify: problems.length > 0 || cfg.notify_always === true,\n  summary: 'tables=' + rows.length + ' deleted=' + deleted + ' problems=' + problems.length,\n  slack_text: head + '\\n' + lines.join('\\n'),\n} }];"
+      },
+      "id": "c1c11212-216e-4216-8068-eeb25fea8116",
+      "name": "Aggregate Results",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1968,
+        -96
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "upsert",
+        "dataTableId": {
+          "__rl": true,
+          "mode": "list",
+          "value": "",
+          "cachedResultName": "maintenance_log"
+        },
+        "matchType": "allConditions",
+        "filters": {
+          "conditions": [
+            {
+              "keyName": "table_name",
+              "keyValue": "__run__"
+            }
+          ]
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "run_id": "={{ $('Evaluate Lock').first().json.run_id }}",
+            "table_name": "__run__",
+            "status": "finished",
+            "candidates": 0,
+            "deleted": "={{ $('Aggregate Results').first().json.deleted }}",
+            "dry_run": 0,
+            "message": "={{ $('Aggregate Results').first().json.summary }}",
+            "ts": "={{ Date.now() }}",
+            "cutoff_iso": ""
+          },
+          "matchingColumns": [],
+          "schema": [],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "options": {}
+      },
+      "id": "153639c9-75c4-4cdf-8f1d-84bd8fe16e8e",
+      "name": "Release Lock",
+      "type": "n8n-nodes-base.dataTable",
+      "typeVersion": 1,
+      "position": [
+        2176,
+        -96
+      ],
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "1e63fe69-7bd3-425a-aece-e13270a580f4",
+              "leftValue": "={{ !!$('Aggregate Results').first().json.notify }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "looseTypeValidation": true,
+        "options": {}
+      },
+      "id": "9df01a11-cdf0-4b8c-b210-f45bc2fd441f",
+      "name": "Notify?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        2352,
+        -96
+      ]
+    },
+    {
+      "parameters": {
+        "select": "channel",
+        "channelId": {
+          "__rl": true,
+          "value": "={{ $('Config').first().json.cfg.slack_channel_id }}",
+          "mode": "id"
+        },
+        "text": "={{ $('Aggregate Results').first().json.slack_text }}",
+        "otherOptions": {}
+      },
+      "id": "a6017112-7489-4b75-ba3e-abeadbf26740",
+      "name": "Slack Summary",
+      "type": "n8n-nodes-base.slack",
+      "typeVersion": 2.3,
+      "position": [
+        2592,
+        -112
+      ],
+      "webhookId": "32ca594d-97fb-4a4d-8d30-af7f9dd95e6c",
+      "credentials": {
+        "slackApi": {
+          "id": "PbK8zg2ZO8xUQwIE",
+          "name": "Slack account"
+        }
+      },
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "content": "### Global error handler",
+        "height": 226,
+        "width": 600,
+        "color": 3
+      },
+      "id": "954eedd1-088e-4c5e-9b7c-45d12fbf3db2",
+      "name": "Note: Error handling",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        816,
+        -144
+      ]
+    },
+    {
+      "parameters": {},
+      "id": "b548fbd2-5e03-4d4d-b05f-473a79c158e4",
+      "name": "Error Trigger",
+      "type": "n8n-nodes-base.errorTrigger",
+      "typeVersion": 1,
+      "position": [
+        880,
+        -80
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const esc = (s) => String(s ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');\n\nconst SLACK_CHANNEL_ID = 'C0000000000'; // <- put your Slack channel id here\nconst e = $input.first().json;\nconst msg = String((e.execution && e.execution.error && e.execution.error.message) || 'unknown error').slice(0, 500);\nconst text = ':rotating_light: *n8n error* in *' + esc(e.workflow && e.workflow.name) + '*\\n*Node:* ' +\n  esc(e.execution && e.execution.lastNodeExecuted) + '\\n*Error:* ' + esc(msg) + '\\n*Execution:* ' + esc(e.execution && e.execution.url);\nreturn [{ json: { channel_id: SLACK_CHANNEL_ID, text } }];"
+      },
+      "id": "942a5f3b-049d-4ae6-979b-a12a31616ba8",
+      "name": "Format Error",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1056,
+        -80
+      ]
+    },
+    {
+      "parameters": {
+        "select": "channel",
+        "channelId": {
+          "__rl": true,
+          "value": "={{ $json.channel_id }}",
+          "mode": "id"
+        },
+        "text": "={{ $json.text }}",
+        "otherOptions": {}
+      },
+      "id": "66b0e6df-6094-4e07-9432-7686ef766af7",
+      "name": "Slack Error Alert",
+      "type": "n8n-nodes-base.slack",
+      "typeVersion": 2.3,
+      "position": [
+        1232,
+        -80
+      ],
+      "webhookId": "e0f8ff87-8baf-4092-b039-a2ec8f3abecc",
+      "credentials": {
+        "slackApi": {
+          "id": "PbK8zg2ZO8xUQwIE",
+          "name": "Slack account"
+        }
+      }
+    }
+  ],
+  "connections": {
+    "Schedule 03:00": {
+      "main": [
+        [
+          {
+            "node": "Config",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Manual Run": {
+      "main": [
+        [
+          {
+            "node": "Config",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Config": {
+      "main": [
+        [
+          {
+            "node": "Get Lock",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get Lock": {
+      "main": [
+        [
+          {
+            "node": "Evaluate Lock",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Evaluate Lock": {
+      "main": [
+        [
+          {
+            "node": "Can Run?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Can Run?": {
+      "main": [
+        [
+          {
+            "node": "Acquire Lock",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Slack Overlap Warning",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Acquire Lock": {
+      "main": [
+        [
+          {
+            "node": "Build Plan",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Plan": {
+      "main": [
+        [
+          {
+            "node": "Loop Tables",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Loop Tables": {
+      "main": [
+        [
+          {
+            "node": "Aggregate Results",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Table Invalid?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Table Invalid?": {
+      "main": [
+        [
+          {
+            "node": "Result Invalid",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Count Candidates",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Count Candidates": {
+      "main": [
+        [
+          {
+            "node": "Evaluate Table",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Evaluate Table": {
+      "main": [
+        [
+          {
+            "node": "Delete?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Delete?": {
+      "main": [
+        [
+          {
+            "node": "Delete Rows",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Result Evaluated",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Delete Rows": {
+      "main": [
+        [
+          {
+            "node": "Result Deleted",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Result Deleted": {
+      "main": [
+        [
+          {
+            "node": "Write Log",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Result Evaluated": {
+      "main": [
+        [
+          {
+            "node": "Write Log",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Result Invalid": {
+      "main": [
+        [
+          {
+            "node": "Write Log",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Write Log": {
+      "main": [
+        [
+          {
+            "node": "Loop Tables",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Aggregate Results": {
+      "main": [
+        [
+          {
+            "node": "Release Lock",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Release Lock": {
+      "main": [
+        [
+          {
+            "node": "Notify?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Notify?": {
+      "main": [
+        [
+          {
+            "node": "Slack Summary",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Error Trigger": {
+      "main": [
+        [
+          {
+            "node": "Format Error",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Format Error": {
+      "main": [
+        [
+          {
+            "node": "Slack Error Alert",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "pinData": {},
+  "meta": {
+    "templateCredsSetupCompleted": true,
+    "instanceId": "7487bf060b3b98602de185e1d98fbf8fedb850f0ff8821e68d763bce0ea4b6fd"
+  }
+}

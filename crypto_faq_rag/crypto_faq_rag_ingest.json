@@ -1,0 +1,1348 @@
+{
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "kb/ingest",
+        "authentication": "headerAuth",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "adb95d86-5c12-4d9b-bf96-975c5f9c2f51",
+      "name": "Webhook Ingest",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        -1344,
+        304
+      ],
+      "webhookId": "51415727-8e6d-4adf-9582-6a908d80a3ae",
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "zK6uUPoDMsyQ4o2J",
+          "name": "Header Auth account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "f36017c2-5625-4c07-ad0d-1ec26bc01dbf",
+              "name": "entry",
+              "value": "ingest",
+              "type": "string"
+            },
+            {
+              "id": "345aa13e-8418-48f3-a6d0-1deb4e74ae44",
+              "name": "request_id",
+              "value": "={{ 'req-' + $execution.id + '-' + $now.toMillis() }}",
+              "type": "string"
+            },
+            {
+              "id": "4e1df850-10ce-46b5-ba51-178eae802220",
+              "name": "payload",
+              "value": "={{ $json.body }}",
+              "type": "object"
+            },
+            {
+              "id": "74dfebed-a938-4a6a-8a5e-0d9148c56e8b",
+              "name": "client_ip",
+              "value": "={{ String(($json.headers && $json.headers['x-forwarded-for']) || '').split(',')[0].trim() }}",
+              "type": "string"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "55248d35-dd86-4b11-a569-da031d089eac",
+      "name": "Tag Ingest",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        -1072,
+        304
+      ]
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "d4107be2-3ba1-4f1b-8e5c-d48504df805d",
+              "name": "cfg",
+              "value": "{\n  \"qdrant_url\": \"http://qdrant:6333\",\n  \"embedding_model\": \"text-embedding-3-small\",\n  \"embedding_dim\": 1536,\n  \"collections\": [\n    \"faq\",\n    \"fees_limits\",\n    \"compliance\"\n  ],\n  \"languages\": [\n    \"ru\",\n    \"en\",\n    \"es\"\n  ],\n  \"chunk_size\": 900,\n  \"chunk_overlap\": 120,\n  \"max_chunks_per_doc\": 120,\n  \"max_docs_per_request\": 20,\n  \"max_doc_chars\": 60000,\n  \"max_question_chars\": 800,\n  \"top_k\": 4,\n  \"score_threshold\": 0.3,\n  \"min_best_score\": 0.4,\n  \"max_context_chunks\": 6,\n  \"max_chunk_chars\": 1200,\n  \"answer_min_groundedness\": 0.8,\n  \"clarify_min_groundedness\": 0.55,\n  \"min_answer_confidence\": 0.6,\n  \"rate_limit_per_minute\": 8,\n  \"cache_ttl_minutes\": 60,\n  \"alert_cooldown_minutes\": 30,\n  \"slack_channel_id\": \"C0000000000\"\n}",
+              "type": "object"
+            }
+          ]
+        },
+        "includeOtherFields": true,
+        "options": {}
+      },
+      "id": "a6ff3483-a42c-4417-8126-1173d567b3ee",
+      "name": "Config",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        -896,
+        304
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const h128 = (str) => {\n  const seeds = [0x811c9dc5, 0x9e3779b1, 0x85ebca6b, 0xc2b2ae35];\n  let o = '';\n  for (const s0 of seeds) {\n    let h = s0 >>> 0;\n    for (let i = 0; i < str.length; i++) {\n      h ^= str.charCodeAt(i);\n      h = Math.imul(h, 16777619) >>> 0;\n      h = (h ^ (h >>> 15)) >>> 0;\n    }\n    o += ('00000000' + h.toString(16)).slice(-8);\n  }\n  return o;\n};\nconst toUuid = (h) => h.slice(0, 8) + '-' + h.slice(8, 12) + '-4' + h.slice(13, 16) + '-8' + h.slice(17, 20) + '-' + h.slice(20, 32);\n\nconst cfg = $('Config').first().json.cfg;\nconst entry = $input.first().json;\nconst payload = entry.payload || {};\nconst reqId = entry.request_id;\nconst fail = (msg) => [{ json: { request_id: reqId, request_error: msg } }];\n\nif (typeof payload !== 'object' || !Array.isArray(payload.documents) || payload.documents.length === 0)\n  return fail('documents must be a non-empty array');\nif (payload.documents.length > cfg.max_docs_per_request)\n  return fail('too many documents (max ' + cfg.max_docs_per_request + ')');\n\nconst clean = (s) => String(s ?? '')\n  .replace(/[\\u0000-\\u0008\\u000B\\u000C\\u000E-\\u001F\\u007F]/g, '')\n  .replace(/[ \\t]+/g, ' ')\n  .replace(/\\n{3,}/g, '\\n\\n')\n  .trim();\n\nconst out = [];\nconst seen = new Set();\nfor (const d of payload.documents) {\n  const errs = [];\n  const doc_id = String(d && d.doc_id != null ? d.doc_id : '').trim();\n  if (!/^[A-Za-z0-9._-]{3,80}$/.test(doc_id)) errs.push('doc_id must match [A-Za-z0-9._-]{3,80}');\n  if (seen.has(doc_id)) errs.push('duplicate doc_id in request');\n  seen.add(doc_id);\n  const collection = String(d && d.collection != null ? d.collection : '');\n  if (!cfg.collections.includes(collection)) errs.push('unknown collection');\n  const lang = String(d && d.lang != null ? d.lang : 'en').toLowerCase();\n  if (!cfg.languages.includes(lang)) errs.push('unsupported lang');\n  const title = clean(d && d.title).slice(0, 200);\n  if (!title) errs.push('title is required');\n  const text = clean(d && d.text);\n  if (!text) errs.push('text is required');\n  if (text.length > cfg.max_doc_chars) errs.push('text is too long (max ' + cfg.max_doc_chars + ' chars)');\n  const version = d && Number.isInteger(d.version) && d.version > 0 ? d.version : 1;\n  const category = clean(d && d.category).slice(0, 50) || 'general';\n  const ok = errs.length === 0;\n  out.push({ json: {\n    request_id: reqId,\n    doc_id: doc_id.slice(0, 80), title, collection, lang, category, version,\n    text: ok ? text : '',\n    force: payload.force === true,\n    allow_downgrade: payload.allow_downgrade === true,\n    _valid: ok,\n    errors: errs,\n    content_hash: ok ? h128(JSON.stringify({ collection, title, lang, category, text })) : '',\n  } });\n}\nreturn out;"
+      },
+      "id": "4de09f76-8bee-4751-9d21-fce40039fdeb",
+      "name": "Validate Ingest",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -720,
+        304
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "26608a68-7592-4b2b-9a4a-a9fa56f63d2d",
+              "leftValue": "={{ !$json.request_error }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "looseTypeValidation": true,
+        "options": {}
+      },
+      "id": "1b09ca5a-86c2-4d5f-b9b9-3a92c98c3099",
+      "name": "Request OK?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        -1328,
+        656
+      ]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify({ request_id: $json.request_id, error: $json.request_error }) }}",
+        "options": {
+          "responseCode": 400
+        }
+      },
+      "id": "c92b69e3-e0a7-4d0f-851c-df27eb5685e3",
+      "name": "Respond Ingest 400",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.4,
+      "position": [
+        -1024,
+        864
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "47e86051-8c74-44e9-98ec-23dab6e3a458",
+              "leftValue": "={{ !!$json._valid }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "looseTypeValidation": true,
+        "options": {}
+      },
+      "id": "4de56413-abcf-43dc-a792-ba34e80eda27",
+      "name": "Doc Valid?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        -1136,
+        640
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "return $input.all().map(i => ({ json: { status: 'rejected', doc_id: i.json.doc_id, detail: (i.json.errors || []).join('; ') } }));"
+      },
+      "id": "be0f3eb8-35af-4679-a870-561797773b84",
+      "name": "Result Rejected",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -32,
+        1072
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "get",
+        "dataTableId": {
+          "__rl": true,
+          "value": "taTYgcRlnllGWCuW",
+          "mode": "list",
+          "cachedResultName": "kb_documents",
+          "cachedResultUrl": "/projects/wYh1e5nxyLbOh0tQ/datatables/taTYgcRlnllGWCuW"
+        },
+        "returnAll": true
+      },
+      "id": "8f290b5d-d515-452d-82e7-1dd2e522e128",
+      "name": "Get Registry",
+      "type": "n8n-nodes-base.dataTable",
+      "typeVersion": 1,
+      "position": [
+        -944,
+        624
+      ],
+      "alwaysOutputData": true,
+      "executeOnce": true,
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "const docs = $('Validate Ingest').all().map(i => i.json).filter(d => d._valid);\nconst reg = new Map($input.all().map(i => i.json).filter(r => r.doc_id).map(r => [r.doc_id, r]));\nreturn docs.map(d => {\n  const ex = reg.get(d.doc_id);\n  let action = 'new';\n  if (ex) {\n    if (Number(ex.version) > d.version && !d.allow_downgrade) action = 'stale_version';\n    else if (d.force) action = 'forced';\n    else if (ex.content_hash === d.content_hash && ex.status === 'indexed') action = 'unchanged';\n    else action = ex.status === 'indexed' ? 'changed' : 'retry';\n  }\n  return { json: { ...d, action, needs_indexing: !['unchanged', 'stale_version'].includes(action) } };\n});"
+      },
+      "id": "281e9e5a-678c-4d90-80ca-45458811dc36",
+      "name": "Compare With Registry",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -752,
+        624
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "084b1c98-773d-4401-a619-35f77289ff8a",
+              "leftValue": "={{ !!$json.needs_indexing }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "looseTypeValidation": true,
+        "options": {}
+      },
+      "id": "1394426b-22ee-43ba-a52e-bfc1292c4837",
+      "name": "Needs Indexing?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        -560,
+        624
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "return $input.all().map(i => ({ json: { status: 'skipped', doc_id: i.json.doc_id, detail: i.json.action } }));"
+      },
+      "id": "61beeeb3-12ab-450a-b884-a285f0ea2bfd",
+      "name": "Result Skipped",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -192,
+        944
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "upsert",
+        "dataTableId": {
+          "__rl": true,
+          "value": "0D5XpS3n7mkUEj8j",
+          "mode": "list",
+          "cachedResultName": "kb_qa_log",
+          "cachedResultUrl": "/projects/wYh1e5nxyLbOh0tQ/datatables/0D5XpS3n7mkUEj8j"
+        },
+        "matchType": "allConditions",
+        "filters": {
+          "conditions": [
+            {
+              "keyName": "doc_id",
+              "keyValue": "={{ $json.doc_id }}"
+            }
+          ]
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "doc_id": "={{ $json.doc_id }}",
+            "title": "={{ $json.title }}",
+            "collection": "={{ $json.collection }}",
+            "lang": "={{ $json.lang }}",
+            "category": "={{ $json.category }}",
+            "version": "={{ $json.version }}",
+            "content_hash": "={{ $json.content_hash }}",
+            "status": "pending",
+            "chunks_count": 0,
+            "last_error": "",
+            "updated_ms": "={{ Date.now() }}",
+            "cleanup_ts": 0
+          },
+          "matchingColumns": [],
+          "schema": [],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "options": {}
+      },
+      "id": "e45993f2-59aa-434f-9a95-7e88b666c735",
+      "name": "Mark Pending",
+      "type": "n8n-nodes-base.dataTable",
+      "typeVersion": 1,
+      "position": [
+        -192,
+        288
+      ],
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "const docs = $('Compare With Registry').all().filter(i => i.json.needs_indexing);\nreturn [...new Set(docs.map(i => i.json.collection))].map(c => ({ json: { collection: c } }));"
+      },
+      "id": "609b907e-5d22-4bc4-8b31-9ed3d0f7b3e2",
+      "name": "Unique Collections",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        0,
+        288
+      ]
+    },
+    {
+      "parameters": {
+        "method": "PUT",
+        "url": "={{ $('Config').first().json.cfg.qdrant_url }}/collections/{{ $json.collection }}",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ vectors: { size: $('Config').first().json.cfg.embedding_dim, distance: 'Cosine' } }) }}",
+        "options": {
+          "timeout": 60000
+        }
+      },
+      "id": "d0e23114-fc6a-4893-a4d0-4d910f7a8cc2",
+      "name": "Ensure Collection",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        176,
+        288
+      ],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "zK6uUPoDMsyQ4o2J",
+          "name": "Header Auth account"
+        }
+      },
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "method": "PUT",
+        "url": "={{ $('Config').first().json.cfg.qdrant_url }}/collections/{{ $('Unique Collections').item.json.collection }}/index?wait=true",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ field_name: 'doc_id', field_schema: 'keyword' }) }}",
+        "options": {
+          "timeout": 60000
+        }
+      },
+      "id": "8e7b1f64-6b6a-4fcc-a386-ce609e9d6108",
+      "name": "Ensure Index doc_id",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        352,
+        288
+      ],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "zK6uUPoDMsyQ4o2J",
+          "name": "Header Auth account"
+        }
+      },
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "return $('Compare With Registry').all().filter(i => i.json.needs_indexing).map(i => ({ json: i.json }));"
+      },
+      "id": "db50b7fb-25f6-492f-97ef-af580f43cb02",
+      "name": "Restore Docs",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        544,
+        288
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const h128 = (str) => {\n  const seeds = [0x811c9dc5, 0x9e3779b1, 0x85ebca6b, 0xc2b2ae35];\n  let o = '';\n  for (const s0 of seeds) {\n    let h = s0 >>> 0;\n    for (let i = 0; i < str.length; i++) {\n      h ^= str.charCodeAt(i);\n      h = Math.imul(h, 16777619) >>> 0;\n      h = (h ^ (h >>> 15)) >>> 0;\n    }\n    o += ('00000000' + h.toString(16)).slice(-8);\n  }\n  return o;\n};\nconst toUuid = (h) => h.slice(0, 8) + '-' + h.slice(8, 12) + '-4' + h.slice(13, 16) + '-8' + h.slice(17, 20) + '-' + h.slice(20, 32);\n\nconst cfg = $('Config').first().json.cfg;\nconst units = (text, size) => {\n  const out = [];\n  for (const para of text.split(/\\n{2,}/)) {\n    let p = para.trim();\n    if (!p) continue;\n    while (p.length > size) {\n      let cut = Math.max(p.lastIndexOf('. ', size), p.lastIndexOf('? ', size), p.lastIndexOf('! ', size));\n      if (cut < size * 0.5) cut = p.lastIndexOf(' ', size);\n      if (cut <= 0) cut = size;\n      out.push(p.slice(0, cut + 1).trim());\n      p = p.slice(cut + 1).trim();\n    }\n    if (p) out.push(p);\n  }\n  return out;\n};\nconst pack = (us, size, overlap) => {\n  const chunks = [];\n  let cur = '';\n  for (const u of us) {\n    if (cur && (cur.length + 2 + u.length) > size) {\n      chunks.push(cur);\n      const tail = cur.slice(-overlap);\n      const sp = tail.indexOf(' ');\n      cur = (sp > -1 ? tail.slice(sp + 1) : tail) + '\\n\\n' + u;\n      if (cur.length > size) cur = u;\n    } else {\n      cur = cur ? cur + '\\n\\n' + u : u;\n    }\n  }\n  if (cur) chunks.push(cur);\n  return chunks;\n};\nreturn $input.all().map(it => {\n  const d = it.json;\n  const chunks = pack(units(d.text, cfg.chunk_size), cfg.chunk_size, cfg.chunk_overlap);\n  if (chunks.length === 0) return { json: { ...d, text: '', chunks: [], fail_reason: 'no_chunks' } };\n  if (chunks.length > cfg.max_chunks_per_doc) return { json: { ...d, text: '', chunks: [], fail_reason: 'too_many_chunks (' + chunks.length + ')' } };\n  return { json: { ...d, text: '', chunks: chunks.map((t, i) => ({\n    index: i,\n    text: t,\n    embed_text: d.title + '\\n' + t,\n    point_id: toUuid(h128(d.doc_id + '|' + d.content_hash + '|' + i)),\n  })) } };\n});"
+      },
+      "id": "aadd7fdc-d63a-4294-90ef-4b541ad1abf4",
+      "name": "Chunk Documents",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        720,
+        288
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "1d3e60e7-a7c8-4cd2-8309-d1eccddd1f8f",
+              "leftValue": "={{ !$json.fail_reason }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "looseTypeValidation": true,
+        "options": {}
+      },
+      "id": "1ef95fee-62c9-4af5-8672-dce706e697d1",
+      "name": "Chunks OK?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        912,
+        288
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.openai.com/v1/embeddings",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "openAiApi",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ model: $('Config').first().json.cfg.embedding_model, input: $json.chunks.map(c => c.embed_text) }) }}",
+        "options": {
+          "batching": {
+            "batch": {
+              "batchSize": 3,
+              "batchInterval": 300
+            }
+          },
+          "timeout": 60000
+        }
+      },
+      "id": "d2a40fae-5574-486e-9de9-1b56f6820e29",
+      "name": "Embed Chunks",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        -192,
+        528
+      ],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000,
+      "credentials": {
+        "openAiApi": {
+          "id": "QCJajJ5SkjwYO9MC",
+          "name": "OpenAI account"
+        }
+      },
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "const cfg = $('Config').first().json.cfg;\nconst docs = $('Chunk Documents').all().map(x => x.json).filter(d => !d.fail_reason);\nreturn $input.all().map((it, i) => {\n  const d = docs[i];\n  const r = it.json;\n  const { chunks, ...rest } = d;\n  const vecs = (Array.isArray(r.data) ? r.data.slice().sort((a, b) => a.index - b.index) : []).map(x => x.embedding);\n  const bad = r.error || vecs.length !== chunks.length || vecs.some(v => !Array.isArray(v) || v.length !== cfg.embedding_dim);\n  if (bad) {\n    const msg = r.error ? (r.error.message || JSON.stringify(r.error)) : 'invalid embeddings response';\n    return { json: { ...rest, fail_reason: 'embedding_failed: ' + String(msg).slice(0, 200) } };\n  }\n  const now = new Date().toISOString();\n  const points = chunks.map((c, k) => ({\n    id: c.point_id,\n    vector: vecs[k],\n    payload: {\n      doc_id: d.doc_id, title: d.title, collection: d.collection, lang: d.lang, category: d.category,\n      version: d.version, content_hash: d.content_hash, chunk_index: c.index, text: c.text, indexed_at: now,\n    },\n  }));\n  return { json: { ...rest, points, chunks_count: points.length } };\n});"
+      },
+      "id": "7dc965af-f414-4cea-8f08-9eed0b2bb831",
+      "name": "Collect Embeddings",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        0,
+        528
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "bb227edf-831b-46e8-8d96-1a5cf4752cc5",
+              "leftValue": "={{ !$json.fail_reason }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "looseTypeValidation": true,
+        "options": {}
+      },
+      "id": "1b7613a6-3055-454e-8575-d57ecef8a6ab",
+      "name": "Embedding OK?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        176,
+        528
+      ]
+    },
+    {
+      "parameters": {
+        "method": "PUT",
+        "url": "={{ $('Config').first().json.cfg.qdrant_url }}/collections/{{ $json.collection }}/points?wait=true",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ points: $json.points }) }}",
+        "options": {
+          "batching": {
+            "batch": {
+              "batchSize": 3,
+              "batchInterval": 200
+            }
+          },
+          "timeout": 120000
+        }
+      },
+      "id": "011d0f66-dd3b-4b6d-a14a-93bb5c8aced4",
+      "name": "Upsert Points",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        352,
+        512
+      ],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000,
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "zK6uUPoDMsyQ4o2J",
+          "name": "Header Auth account"
+        }
+      },
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "const docs = $('Collect Embeddings').all().map(x => x.json).filter(d => !d.fail_reason);\nreturn $input.all().map((it, i) => {\n  const { points, ...rest } = docs[i];\n  const r = it.json;\n  if (r.error || (r.status && r.status !== 'ok')) {\n    const msg = r.error ? (r.error.message || JSON.stringify(r.error)) : JSON.stringify(r.status);\n    return { json: { ...rest, fail_reason: 'qdrant_upsert_failed: ' + String(msg).slice(0, 200) } };\n  }\n  return { json: rest };\n});"
+      },
+      "id": "c0029ccf-12d4-4395-b923-4982741516d2",
+      "name": "Check Upsert",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        544,
+        512
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "4a55b7b8-e5ec-4925-8aff-3660b4e330dc",
+              "leftValue": "={{ !$json.fail_reason }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "looseTypeValidation": true,
+        "options": {}
+      },
+      "id": "de7f2271-fcdb-405c-a745-ca90c72b7b85",
+      "name": "Upsert OK?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        720,
+        512
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $('Config').first().json.cfg.qdrant_url }}/collections/{{ $json.collection }}/points/delete?wait=true",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ filter: { must: [{ key: 'doc_id', match: { value: $json.doc_id } }], must_not: [{ key: 'content_hash', match: { value: $json.content_hash } }] } }) }}",
+        "options": {
+          "batching": {
+            "batch": {
+              "batchSize": 3,
+              "batchInterval": 200
+            }
+          },
+          "timeout": 60000
+        }
+      },
+      "id": "23f750aa-3395-40a1-8066-4f456b61a2a6",
+      "name": "Delete Stale Points",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        -192,
+        752
+      ],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "zK6uUPoDMsyQ4o2J",
+          "name": "Header Auth account"
+        }
+      },
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "const docs = $('Check Upsert').all().map(x => x.json).filter(d => !d.fail_reason);\nreturn $input.all().map((it, i) => {\n  const d = docs[i];\n  const r = it.json || {};\n  const failed = !!r.error || (!!r.status && r.status !== 'ok');\n  const detail = r.error ? (r.error.message || JSON.stringify(r.error)) : (r.status && r.status !== 'ok' ? JSON.stringify(r) : '');\n  const warning = failed ? 'stale_cleanup_failed: ' + String(detail || 'unknown Qdrant response').slice(0, 150) : '';\n  return { json: { ...d, warning } };\n});"
+      },
+      "id": "9af8b184-d57a-4485-8424-a1684b39211c",
+      "name": "Check Delete",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        0,
+        752
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "upsert",
+        "dataTableId": {
+          "__rl": true,
+          "value": "taTYgcRlnllGWCuW",
+          "mode": "list",
+          "cachedResultName": "kb_documents",
+          "cachedResultUrl": "/projects/wYh1e5nxyLbOh0tQ/datatables/taTYgcRlnllGWCuW"
+        },
+        "matchType": "allConditions",
+        "filters": {
+          "conditions": [
+            {
+              "keyName": "doc_id",
+              "keyValue": "={{ $json.doc_id }}"
+            }
+          ]
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "doc_id": "={{ $json.doc_id }}",
+            "title": "={{ $json.title }}",
+            "collection": "={{ $json.collection }}",
+            "lang": "={{ $json.lang }}",
+            "category": "={{ $json.category }}",
+            "version": "={{ $json.version }}",
+            "content_hash": "={{ $json.content_hash }}",
+            "status": "={{ $json.warning ? 'indexed_with_cleanup_warning' : 'indexed' }}",
+            "chunks_count": "={{ $json.chunks_count }}",
+            "last_error": "={{ $json.warning }}",
+            "updated_ms": "={{ Date.now() }}",
+            "cleanup_ts": 0
+          },
+          "matchingColumns": [],
+          "schema": [],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "options": {}
+      },
+      "id": "c1b2815b-3744-4123-83ea-d9974733ed08",
+      "name": "Mark Indexed",
+      "type": "n8n-nodes-base.dataTable",
+      "typeVersion": 1,
+      "position": [
+        176,
+        752
+      ],
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "const docs = $('Check Delete').all().map(x => x.json);\nreturn $input.all().map((item, i) => {\n  const d = docs[i] || item.json;\n  const warning = d.warning || (d.status === 'indexed_with_cleanup_warning' ? d.last_error : '');\n  return { json: {\n    status: warning ? 'indexed_with_cleanup_warning' : 'indexed',\n    doc_id: d.doc_id,\n    detail: (d.chunks_count || 0) + ' chunks' + (warning ? ' (cleanup warning: ' + warning + ')' : ''),\n  } };\n});"
+      },
+      "id": "32f7a4e7-a83e-47c4-815e-5b39539d1cab",
+      "name": "Result Indexed",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        352,
+        752
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "upsert",
+        "dataTableId": {
+          "__rl": true,
+          "value": "ZJAHpDClFacrDwkZ",
+          "mode": "list",
+          "cachedResultName": "kb_alert_state",
+          "cachedResultUrl": "/projects/wYh1e5nxyLbOh0tQ/datatables/ZJAHpDClFacrDwkZ"
+        },
+        "matchType": "allConditions",
+        "filters": {
+          "conditions": [
+            {
+              "keyName": "doc_id",
+              "keyValue": "={{ $json.doc_id }}"
+            }
+          ]
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "doc_id": "={{ $json.doc_id }}",
+            "title": "={{ $json.title }}",
+            "collection": "={{ $json.collection }}",
+            "lang": "={{ $json.lang }}",
+            "category": "={{ $json.category }}",
+            "version": "={{ $json.version }}",
+            "content_hash": "={{ $json.content_hash }}",
+            "status": "failed",
+            "chunks_count": 0,
+            "last_error": "={{ String($json.fail_reason).slice(0, 300) }}",
+            "updated_ms": "={{ Date.now() }}",
+            "cleanup_ts": "={{ Date.now() }}"
+          },
+          "matchingColumns": [],
+          "schema": [],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "options": {}
+      },
+      "id": "e405ec67-fcfe-4c28-8f68-c6e32a6237c6",
+      "name": "Mark Failed",
+      "type": "n8n-nodes-base.dataTable",
+      "typeVersion": 1,
+      "position": [
+        1200,
+        608
+      ],
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "return $input.all().map(i => ({ json: { status: 'failed', doc_id: i.json.doc_id, detail: i.json.last_error || 'unknown error' } }));"
+      },
+      "id": "846788cb-4db1-418a-97e1-68216ca83d2e",
+      "name": "Result Failed",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1376,
+        608
+      ]
+    },
+    {
+      "parameters": {
+        "numberInputs": 4
+      },
+      "id": "197b2a7a-3576-41ec-aed7-74d4f163d477",
+      "name": "Merge Ingest Results",
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 3.1,
+      "position": [
+        1648,
+        688
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const esc = (s) => String(s ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');\nconst rid = $('Tag Ingest').first().json.request_id;\nconst rows = $input.all().map(i => i.json);\nconst by = (s) => rows.filter(r => r.status === s);\nconst summary = {\n  indexed: by('indexed').length,\n  indexed_with_cleanup_warning: by('indexed_with_cleanup_warning').length,\n  skipped: by('skipped').length,\n  rejected: by('rejected').length,\n  failed: by('failed').length,\n};\nlet http = 200;\nif (summary.failed > 0 || summary.indexed_with_cleanup_warning > 0) http = (summary.indexed + summary.indexed_with_cleanup_warning + summary.skipped > 0) ? 207 : 502;\nelse if (summary.rejected > 0 && summary.indexed === 0 && summary.skipped === 0) http = 422;\nconst failed = [...by('failed'), ...by('indexed_with_cleanup_warning')];\nconst slack_text = failed.length\n  ? ':warning: *KB ingestion*: ' + failed.length + ' document(s) failed or need cleanup (request `' + esc(rid) + '`)' + '\\n' +\n    failed.slice(0, 10).map(f => '• `' + esc(f.doc_id) + '`: ' + esc(String(f.detail || '').slice(0, 160))).join('\\n')\n  : '';\nreturn [{ json: {\n  http_status: http,\n  has_failures: failed.length > 0,\n  slack_text,\n  response: { request_id: rid, summary, results: rows.map(r => ({ doc_id: r.doc_id, status: r.status, detail: r.detail })) },\n} }];"
+      },
+      "id": "ccd90f87-bf33-45a2-b24e-f1d823f41810",
+      "name": "Aggregate Ingest",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1824,
+        720
+      ]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify($json.response) }}",
+        "options": {
+          "responseCode": "={{ $json.http_status }}"
+        }
+      },
+      "id": "76401b54-1bce-46f5-9375-8f053e72a54c",
+      "name": "Respond Ingest",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.4,
+      "position": [
+        2032,
+        640
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "263a8d2e-e1a9-414b-8d00-17436fab212e",
+              "leftValue": "={{ !!$json.has_failures }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "looseTypeValidation": true,
+        "options": {}
+      },
+      "id": "26841c8f-c3e6-4b94-be63-426d444514de",
+      "name": "Has Ingest Failures?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        2032,
+        816
+      ]
+    },
+    {
+      "parameters": {
+        "select": "channel",
+        "channelId": {
+          "__rl": true,
+          "value": "={{ $('Config').first().json.cfg.slack_channel_id }}",
+          "mode": "id"
+        },
+        "text": "={{ $json.slack_text }}",
+        "otherOptions": {}
+      },
+      "id": "02b27f64-e1c8-44a3-8ad8-d47b9d0cce64",
+      "name": "Slack Ingest Failures",
+      "type": "n8n-nodes-base.slack",
+      "typeVersion": 2.3,
+      "position": [
+        2240,
+        800
+      ],
+      "webhookId": "be01d66a-7f01-4160-b7df-bf6bea90aea4",
+      "credentials": {
+        "slackApi": {
+          "id": "PbK8zg2ZO8xUQwIE",
+          "name": "Slack account"
+        }
+      },
+      "onError": "continueRegularOutput"
+    }
+  ],
+  "connections": {
+    "Webhook Ingest": {
+      "main": [
+        [
+          {
+            "node": "Tag Ingest",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Tag Ingest": {
+      "main": [
+        [
+          {
+            "node": "Config",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Config": {
+      "main": [
+        [
+          {
+            "node": "Validate Ingest",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Validate Ingest": {
+      "main": [
+        [
+          {
+            "node": "Request OK?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Request OK?": {
+      "main": [
+        [
+          {
+            "node": "Doc Valid?",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Respond Ingest 400",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Doc Valid?": {
+      "main": [
+        [
+          {
+            "node": "Get Registry",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Result Rejected",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Result Rejected": {
+      "main": [
+        [
+          {
+            "node": "Merge Ingest Results",
+            "type": "main",
+            "index": 3
+          }
+        ]
+      ]
+    },
+    "Get Registry": {
+      "main": [
+        [
+          {
+            "node": "Compare With Registry",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Compare With Registry": {
+      "main": [
+        [
+          {
+            "node": "Needs Indexing?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Needs Indexing?": {
+      "main": [
+        [
+          {
+            "node": "Mark Pending",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Result Skipped",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Result Skipped": {
+      "main": [
+        [
+          {
+            "node": "Merge Ingest Results",
+            "type": "main",
+            "index": 2
+          }
+        ]
+      ]
+    },
+    "Mark Pending": {
+      "main": [
+        [
+          {
+            "node": "Unique Collections",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Unique Collections": {
+      "main": [
+        [
+          {
+            "node": "Ensure Collection",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Ensure Collection": {
+      "main": [
+        [
+          {
+            "node": "Ensure Index doc_id",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Ensure Index doc_id": {
+      "main": [
+        [
+          {
+            "node": "Restore Docs",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Restore Docs": {
+      "main": [
+        [
+          {
+            "node": "Chunk Documents",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Chunk Documents": {
+      "main": [
+        [
+          {
+            "node": "Chunks OK?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Chunks OK?": {
+      "main": [
+        [
+          {
+            "node": "Embed Chunks",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Mark Failed",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Embed Chunks": {
+      "main": [
+        [
+          {
+            "node": "Collect Embeddings",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Collect Embeddings": {
+      "main": [
+        [
+          {
+            "node": "Embedding OK?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Embedding OK?": {
+      "main": [
+        [
+          {
+            "node": "Upsert Points",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Mark Failed",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Upsert Points": {
+      "main": [
+        [
+          {
+            "node": "Check Upsert",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Check Upsert": {
+      "main": [
+        [
+          {
+            "node": "Upsert OK?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Upsert OK?": {
+      "main": [
+        [
+          {
+            "node": "Delete Stale Points",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Mark Failed",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Delete Stale Points": {
+      "main": [
+        [
+          {
+            "node": "Check Delete",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Check Delete": {
+      "main": [
+        [
+          {
+            "node": "Mark Indexed",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Mark Indexed": {
+      "main": [
+        [
+          {
+            "node": "Result Indexed",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Result Indexed": {
+      "main": [
+        [
+          {
+            "node": "Merge Ingest Results",
+            "type": "main",
+            "index": 1
+          }
+        ]
+      ]
+    },
+    "Mark Failed": {
+      "main": [
+        [
+          {
+            "node": "Result Failed",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Result Failed": {
+      "main": [
+        [
+          {
+            "node": "Merge Ingest Results",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Merge Ingest Results": {
+      "main": [
+        [
+          {
+            "node": "Aggregate Ingest",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Aggregate Ingest": {
+      "main": [
+        [
+          {
+            "node": "Respond Ingest",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Has Ingest Failures?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Has Ingest Failures?": {
+      "main": [
+        [
+          {
+            "node": "Slack Ingest Failures",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "pinData": {},
+  "meta": {
+    "templateCredsSetupCompleted": true,
+    "instanceId": "7487bf060b3b98602de185e1d98fbf8fedb850f0ff8821e68d763bce0ea4b6fd"
+  }
+}
