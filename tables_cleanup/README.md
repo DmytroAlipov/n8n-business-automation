@@ -1,6 +1,6 @@
 # Data Tables Retention Cleanup
 
-
+<img width="1487" height="483" alt="Data Tables Retention Cleanup" src="https://github.com/user-attachments/assets/9d1d1c9d-9713-46de-bc90-11a2712d8001" />
 
 Scheduled, AI-free maintenance workflow for the FAQ assistant's configured n8n Data Tables. It runs daily at **03:00** (cron `0 3 * * *`) and deletes rows older than the configured retention period (30 days by default). The exported workflow does not set a timezone; set it to `Europe/Madrid` in the workflow settings if that is the intended local schedule.
 
